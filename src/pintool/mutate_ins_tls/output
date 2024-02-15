@@ -1,0 +1,4 @@
+A: /tmp_proj/pin_jenkins/workspace/pypl-pin-nightly/GitPin/Source/pin/pin/image.cpp: BBL_Address: 3689: Doesn't make sense to calculate BBL_Address of an optimized BBL!
+################################################################################
+## STACK TRACE
+################################################################################

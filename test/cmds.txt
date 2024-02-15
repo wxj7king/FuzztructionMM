@@ -1,0 +1,3 @@
+g++ -shared -Wall -O3 -fPIC post_test.cc -o post_test.so -I /home/proj/proj/AFLplusplus/include
+export AFL_CUSTOM_MUTATOR_LIBRARY="/home/proj/proj/test/post_test.so"
+
