@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include <algorithm>
+#include <set>
 
 using std::cerr;
 using std::cout;
@@ -21,6 +23,7 @@ enum VALID_INS_TYPE{
     INS_TYPE_LOAD_ARGS
 };
 std::map<ADDRINT, std::string> instmap;
+std::set<std::string> lib_blacklist;
 
 BOOL IsValidReg(REG reg){
     switch (reg)
@@ -115,7 +118,7 @@ BOOL isValidIns(INS ins, VALID_INS_TYPE ins_type){
     }
 }
 
-VOID InstrumentIns(INS ins, UINT64 insCount)
+VOID InstrumentIns(INS ins, ADDRINT baseAddr)
 //VOID InstrumentIns(INS ins, VOID *v)
 {
     if (instmap.count(INS_Address(ins))) return; //FIXME ? Why there could be multiple instrument?
@@ -123,20 +126,20 @@ VOID InstrumentIns(INS ins, UINT64 insCount)
     if (ins_opcode != XED_ICLASS_MOV) return;
 
     //if (ins_opcode == XED_ICLASS_MOV && INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1)){
-    if (INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1) && insCount < MAX_INSNUM){
-        if (isValidIns(ins, INS_TYPE_LOAD_ARGS)){
-            REG reg2mut = REG_INVALID();
-            reg2mut = INS_OperandReg(ins, 1);
-            if (!IsValidReg(reg2mut)) return;
+    // if (INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1)){
+    //     if (isValidIns(ins, INS_TYPE_LOAD_ARGS)){
+    //         REG reg2mut = REG_INVALID();
+    //         reg2mut = INS_OperandReg(ins, 1);
+    //         if (!IsValidReg(reg2mut)) return;
             
-            instmap[INS_Address(ins)] = INS_Disassemble(ins); 
-            total_count++;
-            //printf("arg load instruction@%p, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
-            //printf("arg load instruction: %s\n",  INS_Disassemble(ins).c_str());
-            printf("%p,%s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
+    //         instmap[INS_Address(ins)] = INS_Disassemble(ins); 
+    //         total_count++;
+    //         //printf("arg load instruction@%p, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
+    //         //printf("arg load instruction: %s\n",  INS_Disassemble(ins).c_str());
+    //         printf("arg %p,%s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
 
-        }
-    }
+    //     }
+    // }
 
     // TODO: use IPOINT to remove similar code
     if (INS_IsMemoryRead(ins) && !INS_IsRet(ins)){
@@ -150,7 +153,7 @@ VOID InstrumentIns(INS ins, UINT64 insCount)
         total_count++;
         //printf("data read instruction@%p, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str()); 
         //printf("data read instruction: %s\n", INS_Disassemble(ins).c_str()); 
-        printf("%p,%s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
+        printf("%p,%s\n", (void *)(INS_Address(ins) - baseAddr), INS_Disassemble(ins).c_str());
 
     }
 
@@ -165,22 +168,57 @@ VOID InstrumentIns(INS ins, UINT64 insCount)
         total_count++;
         //printf("data write instruction@%p, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
         //printf("data write instruction: %s\n",  INS_Disassemble(ins).c_str());
-        printf("%p,%s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
+        printf("%p,%s\n", (void *)(INS_Address(ins) - baseAddr), INS_Disassemble(ins).c_str());
     }
     
 }
 
+const char* StripPath(const char* path)
+{
+    const char* file = strrchr(path, '/');
+    if (file)
+        return file + 1;
+    else
+        return path;
+}
+
 // XXX: cannot use routine because the changed register value will not saved
 VOID InstrumentTrace(TRACE trace, VOID *v){
-    //UINT64 insCount = 0;
+    ADDRINT baseAddr = 0;
+    RTN rtn = TRACE_Rtn(trace);
+    std::string img_name;
+    if (RTN_Valid(rtn)){
+        IMG img = SEC_Img(RTN_Sec(rtn));
+        img_name = StripPath(IMG_Name(img).c_str());
+        if (lib_blacklist.find(img_name) != lib_blacklist.end()) return;
+        baseAddr = IMG_LowAddress(img);
+    }
+    else return;
+    //printf("In %s\n", img_name.c_str());
+
     for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
         for(INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)){
-            //insCount++;
-            InstrumentIns(ins, insCount);
+            InstrumentIns(ins, baseAddr);
         }
 
     }
 }
+
+// VOID FindImgs(IMG img, VOID *v){
+//     printf("Img loading: %s, id: %d, base: 0x%lx\n", IMG_Name(img).c_str(), IMG_Id(img), IMG_LowAddress(img));
+// }
+
+// VOID InstrumentRtn(RTN rtn, VOID *v){
+//     IMG img = SEC_Img(RTN_Sec(rtn));
+//     ADDRINT baseAddr = IMG_LowAddress(img);
+//     RTN_Open(rtn);
+//     printf("In img: %s\n", IMG_Name(img).c_str());
+//     for (INS ins = RTN_InsHead(rtn); INS_Valid(ins); ins = INS_Next(ins))
+//     {
+//         InstrumentIns(ins, baseAddr);
+//     }
+//     RTN_Close(rtn);
+// }
 
 void Fini(INT32 code, void *v){
 	// printf("read counts: %ld\n", read_count);
@@ -197,11 +235,21 @@ INT32 Usage()
     return -1;
 }
 
+VOID Init(){
+    lib_blacklist.insert("ld-linux-x86-64.so.2");
+    lib_blacklist.insert("[vdso]");
+    lib_blacklist.insert("libc.so.6");
+    return;
+}
+
 int main(INT32 argc, CHAR* argv[])
 {   
+    PIN_InitSymbols();
     if (PIN_Init(argc, argv)) return Usage();
     //PIN_SetSyntaxATT();
     //INS_AddInstrumentFunction(InstrumentIns, 0);
+    //RTN_AddInstrumentFunction(InstrumentRtn, 0);
+    //IMG_AddInstrumentFunction(FindImgs, 0);
     TRACE_AddInstrumentFunction(InstrumentTrace, 0);
     PIN_AddFiniFunction(Fini, 0);
     PIN_StartProgram();

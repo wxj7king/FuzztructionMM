@@ -93,7 +93,7 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
 
 
 size_t afl_custom_post_process(my_mutator_t *data, unsigned char *in_buf, size_t buf_size, unsigned char **out_buf) {
-
+    //return buf_size;
     int ret = mq_receive(data->mqd, (char *)data->msg_buf, data->my_mqattr.mq_msgsize, &data->mq_pri);
     if (ret == -1) {
         if (errno == EAGAIN){

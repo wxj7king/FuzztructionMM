@@ -94,10 +94,9 @@ TestCase generate_testcase(int id, Patchpoints &patch_points){
     
     pos2 = cmd1.find('@');
     cmd1 = cmd1.replace(pos2, 1, std::to_string(injectValue));
-    printf("cmd: %s\n", cmd1.c_str());
+    //printf("cmd: %s\n", cmd1.c_str());
 
     // TODO: set maximum file size limit
-    // TODO: replace system() with execve()
     int ret = system(cmd1.c_str());
     // if(ret != 0){
     //     std::cout << "system function error\n";

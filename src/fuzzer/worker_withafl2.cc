@@ -6,6 +6,7 @@
 #include <string.h>
 #include <assert.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 #include <vector>
 #include <string>
 #include <memory>
@@ -14,12 +15,14 @@
 #include <sstream>
 #include <fstream>
 #include <random>
-
+#include <iostream>
 
 #define MQNAME "/TEST_MQ"
-#define MAX_FILE_SIZE 4096
+#define MAX_FILE_SIZE 16 * 1024
 #define MAX_INJECTVAL 4096
 #define NUM_PROC 8
+#define TIMEOUT 5
+#define NUM_TESTCASE 3
 typedef struct patch_point{
     uint64_t addr;
     uint64_t injectValue;
@@ -32,11 +35,17 @@ typedef std::vector<Patchpoint> Patchpoints;
 struct mq_attr my_mqattr;
 std::string out_dir = "";
 pid_t pids[NUM_PROC];
+pid_t afl_pid;
 int num_process = NUM_PROC;
+static volatile int timeout_flag;
+
+void timeout_handler(int sig){
+    timeout_flag = 1;
+}
 
 Patchpoints find_patchpoints(std::string out_dir){
     Patchpoints patch_points;
-    std::string cmd = "LD_LIBRARY_PATH=/home/proj/proj/uninstrumented/openssl/ /home/proj/proj/tools/pin-3.28-98749-g6643ecee5-gcc-linux/pin -t /home/proj/proj/src/pintool/find_inst_sites/obj-intel64/find_inst_sites.so -- /home/proj/proj/uninstrumented/openssl/apps/openssl genrsa -aes128 -passout pass:xxxxx -out @ 512 2>/dev/null";
+    std::string cmd = "LD_LIBRARY_PATH=/home/proj/proj/uninstrumented/openssl/ /home/proj/proj/tools/pin-3.28-98749-g6643ecee5-gcc-linux/pin -t /home/proj/proj/src/pintool/find_inst_sites2/obj-intel64/find_inst_sites.so -- /home/proj/proj/uninstrumented/openssl/apps/openssl genrsa -aes128 -passout pass:xxxxx -out @ 512 2>/dev/null";
     out_dir = out_dir + "/tmp_rsak";
     cmd = cmd.replace(cmd.find('@'), 1, out_dir);
     char buffer[128] = {};
@@ -65,15 +74,9 @@ TestCase generate_testcase(int id, Patchpoints &patch_points){
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
     std::string timestamp = std::to_string(millis);
     std::string out_file = out_dir + "/rsak_" + timestamp;
-    std::ostringstream tmp_ss;
-    
-    tmp_ss << "LD_LIBRARY_PATH=/home/proj/proj/uninstrumented/openssl/ timeout 5 /home/proj/proj/tools/pin-3.28-98749-g6643ecee5-gcc-linux/pin -t /home/proj/proj/src/pintool/mutate_ins/obj-intel64/mutate_ins.so -addr @ -val @ -- /home/proj/proj/uninstrumented/openssl/apps/openssl genrsa -aes128 -passout pass:xxxxx -out ";
-    tmp_ss << out_file;
-    tmp_ss << " 512 > /dev/null 2>&1";
-    std::string cmd1 = tmp_ss.str();
-    //std::string cmd2 = "rm -f /tmp/rsak2";
+    std::vector<const char*> source_argv;
+    std::vector<const char*> source_envp;
     size_t pp_idx;
-    uint64_t mask = 0x000000000000ffff;
     uint64_t injectValue, addr;
 
     std::random_device rd;
@@ -82,43 +85,103 @@ TestCase generate_testcase(int id, Patchpoints &patch_points){
     std::uniform_int_distribution<int> dist_idx(0, patch_points.size());
     std::uniform_int_distribution<int> dist_val(0, MAX_INJECTVAL);
 
-    pp_idx = dist_idx(gen);
-    addr = patch_points[pp_idx].addr;
-    injectValue = dist_val(gen);
-    // addr = 0x30b4;
-    // injectValue = 4096;
-    patch_points[pp_idx].injectValue = injectValue;
-    size_t pos1, pos2;
-    pos1 = cmd1.find('@');
-    cmd1 = cmd1.replace(pos1, 1, std::to_string(addr & mask));
-    
-    pos2 = cmd1.find('@');
-    cmd1 = cmd1.replace(pos2, 1, std::to_string(injectValue));
-    printf("cmd: %s\n", cmd1.c_str());
+    std::string addrs_str = "", injectValues_str = "";
+    for (size_t i = 0; i < NUM_TESTCASE; i ++){
+        pp_idx = dist_idx(gen);
+        addr = patch_points[pp_idx].addr;
+        addrs_str += (std::to_string(addr) + ",");
+        injectValue = dist_val(gen);
+        injectValues_str += (std::to_string(injectValue) + ",");
+        patch_points[pp_idx].injectValue = injectValue;
+        
+    }
+    addrs_str.pop_back();
+    injectValues_str.pop_back();
+    // pp_idx = dist_idx(gen);
+    // addr = patch_points[pp_idx].addr;
+    // injectValue = dist_val(gen);
+    // // addr = 0x2030b4;
+    // // injectValue = 4096;
+    // patch_points[pp_idx].injectValue = injectValue;
+    // const char* addr_str = std::to_string(addr).c_str();
+    // const char* injectValue_str = std::to_string(injectValue).c_str();
+
+    // argv and envp
+    source_argv.push_back("/home/proj/proj/tools/pin-3.28-98749-g6643ecee5-gcc-linux/pin");
+    source_argv.push_back("-t");
+    source_argv.push_back("/home/proj/proj/src/pintool/mutate_ins2/obj-intel64/mutate_ins.so");
+    source_argv.push_back("-addr");
+    source_argv.push_back(addrs_str.c_str());
+    source_argv.push_back("-val");
+    source_argv.push_back(injectValues_str.c_str());
+    source_argv.push_back("--");
+    source_argv.push_back("/home/proj/proj/uninstrumented/openssl/apps/openssl");
+    source_argv.push_back("genrsa");
+    source_argv.push_back("-aes128");
+    source_argv.push_back("-passout");
+    source_argv.push_back("pass:xxxxx");
+    source_argv.push_back("-out");
+    source_argv.push_back(out_file.c_str());
+    source_argv.push_back("512");
+    source_argv.push_back(0);
+    source_envp.push_back("LD_LIBRARY_PATH=/home/proj/proj/uninstrumented/openssl/");
+    source_envp.push_back(0);
+
+    // printf("addr: %s, injectvalue: %s\n", source_argv[4], source_argv[6]);
+    // printf("cmd: \n");
+    // std::vector<const char*>::iterator it;
+    // for(it = source_argv.begin(); it != source_argv.end(); it++){
+    //     std::cout << *it << " ";
+    // }
 
     // TODO: set maximum file size limit
     // TODO: replace system() with execve()
-    int ret = system(cmd1.c_str());
+    int pid = fork();
+    if (pid == -1){
+        perror("fork failed!");
+        _exit(1);
+    }else if(pid == 0){
+        // discard output
+        int null_fd = open("/dev/null", O_WRONLY);
+        if (null_fd < 0) perror("failed to open /dev/null!");
+        dup2(null_fd, STDOUT_FILENO);
+        dup2(null_fd, STDERR_FILENO);
+        close(null_fd);
+        // set limit to the file size of output 
+        struct rlimit limit;
+        limit.rlim_cur = MAX_FILE_SIZE;
+        limit.rlim_max = MAX_FILE_SIZE;
+        assert(setrlimit(RLIMIT_FSIZE, &limit) == 0);
+        execve(source_argv[0], const_cast<char* const*>(source_argv.data()), const_cast<char* const*>(source_envp.data()));
+        perror("execve failed!");
+        _exit(1);
+    }
+
+    signal(SIGALRM, timeout_handler);
+    alarm(TIMEOUT);
+    waitpid(pid, NULL, 0);
     // if(ret != 0){
     //     std::cout << "system function error\n";
     //     return 0;
     // }
-    int f = 1;
+    int fail = 1;
     std::ifstream mutated_output(out_file);
-    if (!mutated_output){
+    if (timeout_flag){
+        printf("timeout occured!\n");
+        fail = 1;
+    }else if (!mutated_output){
         //std::cout << "mutated output file open failed\n";
-        f = 1;
-        //return -1;
+        fail = 1;
     }else if(std::filesystem::file_size(out_file) == 0){
         //std::cout << "mutated output file is empty\n";
-        f = 1;
+        fail = 1;
     }else{
         //std::cout << "mutated output file is exist!\n";
-        f = 0;
+        fail = 0;
     }
 
     TestCase testcase;
-    if (f){
+    if (fail){
         memset(testcase.filename, 0, sizeof(testcase.filename));
     }else{
         memcpy(testcase.filename, out_file.c_str(), sizeof(testcase.filename));
@@ -134,21 +197,22 @@ void child_process(int id){
     if (!std::filesystem::exists(out_dir)){
         if (!std::filesystem::create_directory(out_dir)) {
             printf("failed to create directory in process %d\n", id);
-            exit(1);
+            _exit(1);
         }
     }
     Patchpoints pps = find_patchpoints(out_dir);
     
     mqd_t mqd = mq_open (MQNAME, O_CREAT | O_RDWR,  0600, &my_mqattr);
     if (mqd == -1){
-        perror ("mq_open");
-        exit (1);
+        perror("mq_open");
+        _exit(1);
     }
 
     int i = 1000000;
 
     //sprintf(ts.filename, "From child process %d", id);
     while(i--){
+        timeout_flag = 0;
         TestCase ts = generate_testcase(id, pps);
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
     }
@@ -157,13 +221,16 @@ void child_process(int id){
     if (out_dir != ""){
         if(!std::filesystem::remove_all(out_dir)) printf("failed to delete dir '%s'\n", out_dir.c_str());
     }
-    exit(0);
+    _exit(0);
 }
 
 void signal_handler(int sig){
     for (int i = 0; i < NUM_PROC; i++){
-        kill(pids[i], SIGKILL);
+        // SIGTERM
+        //kill(pids[i], SIGKILL);
+        kill(pids[i], SIGTERM);
     }
+    kill(afl_pid, SIGKILL);
     for (int i = 0; i < NUM_PROC; i++){
         out_dir = "/tmp/ftm_workerDir_" + std::to_string(i);
         if(!std::filesystem::remove_all(out_dir)) printf("failed to delete dir '%s'\n", out_dir.c_str());
@@ -173,6 +240,7 @@ void signal_handler(int sig){
     printf("\nHave a nice day!\n");
     exit(0);
 }
+
 
 int main(){
 
@@ -187,34 +255,35 @@ int main(){
             abort();
         } else if (pids[i] == 0) {
             child_process(i);
-            exit(0);
+            _exit(0);
         }
     }
     signal(SIGINT, signal_handler);
-    
-    char *afl_argv[] = {const_cast<char*>("/usr/local/bin/afl-fuzz"), 
-                        const_cast<char*>("-i"),
-                        const_cast<char*>("/home/proj/proj/test/afl_test1/input"),
-                        const_cast<char*>("-o"),
-                        const_cast<char*>("/home/proj/proj/test/afl_test1/output"),
-                        const_cast<char*>("--"),
-                        const_cast<char*>("/home/proj/proj/openssl/apps/openssl"),
-                        const_cast<char*>("rsa"),
-                        const_cast<char*>("-check"),
-                        const_cast<char*>("-in"),
-                        const_cast<char*>("@@"),
-                        const_cast<char*>("-passin"),
-                        const_cast<char*>("pass:xxxxx"),
-                        0
-                        };
-    
-    char *afl_envp[] = {const_cast<char*>("AFL_CUSTOM_MUTATOR_LIBRARY=/home/proj/proj/src/afl_customut/inject_ts_multi.so"), 0};
-    
-    pid_t afl_pid = fork();
+    std::vector<const char*> afl_envp;
+    std::vector<const char*> afl_argv;
+
+    afl_argv.push_back("/usr/local/bin/afl-fuzz");
+    afl_argv.push_back("-i");
+    afl_argv.push_back("/home/proj/proj/test/afl_test1/input");
+    afl_argv.push_back("-o");
+    afl_argv.push_back("/home/proj/proj/test/afl_test1/output");
+    afl_argv.push_back("--");
+    afl_argv.push_back("/home/proj/proj/openssl/apps/openssl");
+    afl_argv.push_back("rsa");
+    afl_argv.push_back("-check");
+    afl_argv.push_back("-in");
+    afl_argv.push_back("@@");
+    afl_argv.push_back("-passin");
+    afl_argv.push_back("pass:xxxxx");
+    afl_argv.push_back(0);
+    afl_envp.push_back("AFL_CUSTOM_MUTATOR_LIBRARY=/home/proj/proj/src/afl_customut/inject_ts_multi.so");
+    afl_envp.push_back(0);
+
+    afl_pid = fork();
     int status;
     if(afl_pid == 0){
-        execve(afl_argv[0], afl_argv, afl_envp);
-        printf("You shall not access here!\n");
+        execve(afl_argv[0], const_cast<char* const*>(afl_argv.data()), const_cast<char* const*>(afl_envp.data()));
+        perror("execve failed!\n");
     }
     
     while (num_process > 0) {
