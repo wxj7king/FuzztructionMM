@@ -17,11 +17,19 @@ using std::hex;
 enum VALID_INS_TYPE{
     INS_TYPE_MEM_READ,
     INS_TYPE_MEM_WRITE,
-    INS_TYPE_LOAD_ARGS
 };
+enum MUTATION_TYPE{
+    BYTE_FLIP = 1,
+    BIT_FLIP = 2,
+    RANDOM_BYTE = 3,
+    INJECT_VAL = 4
+};
+
 typedef struct patch_point{
     ADDRINT addr;
     UINT64 injectValue;
+    UINT64 mut_type;
+    UINT64 mut_idx;
 } Patchpoint;
 typedef std::vector<Patchpoint> Patchpoints;
 std::set<std::string> lib_blacklist;
@@ -29,12 +37,64 @@ Patchpoints patch_points;
 static BOOL detach_flag = false;
 
 KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify addrs of instructions");
-KNOB<std::string> KnobNewVal(KNOB_MODE_WRITEONCE, "pintool", "val", "512", "specify values to inject");
+KNOB<std::string> KnobNewVal(KNOB_MODE_WRITEONCE, "pintool", "val", "512", "specify values to inject, pad 0 if not used");
+KNOB<std::string> KnobNewMut(KNOB_MODE_WRITEONCE, "pintool", "mut", "1", "specify mutation types");
+KNOB<std::string> KnobNewMutIdx(KNOB_MODE_WRITEONCE, "pintool", "idx", "0", "specify index of byte/bit to mutate, pad 0 if not used");
 
-VOID MutateReg(ADDRINT Ip, REG reg, UINT64 injectValue, CONTEXT *ctx){
-    //srand(time(0));
-    //UINT32 injectValue = rand() % MAXMUTVALUE;
-    printf("instruction@0x%lx, inject value of register %s with %ld\n", Ip, REG_StringShort(reg).c_str(), injectValue);
+VOID MutateReg(ADDRINT Ip, REG reg, UINT32 reg_size, UINT64 injectValue, CONTEXT *ctx){
+    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    PIN_GetContextRegval(ctx, reg, reg_val);
+    UINT8 *ptr = (UINT8 *)&injectValue;
+    //printf("instruction@0x%lx, inject value of register %s with %ld, original value=%ld\n", Ip, REG_StringShort(reg).c_str(), injectValue, *(ADDRINT*)reg_val);
+    for (UINT32 i = 0; i < reg_size; i++){
+        reg_val[i] = ptr[i];
+    }
+    printf("instruction@0x%lx, inject value of register %s with %ld\n", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
+    PIN_SetContextRegval(ctx, reg, reg_val);
+    free(reg_val);
+    return;
+}
+
+VOID ByteFlip(ADDRINT Ip, REG reg, UINT32 reg_size, UINT64 idx, CONTEXT *ctx){
+    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    PIN_GetContextRegval(ctx, reg, reg_val);
+    //printf("byte flip: instruction@0x%lx, register %s, original value=%ld ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
+    if (idx >= reg_size) return;
+    // flip byte
+    reg_val[idx] ^= 0xff;
+    //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
+    PIN_SetContextRegval(ctx, reg, reg_val);
+    free(reg_val);
+    return;
+}
+
+VOID BitFlip(ADDRINT Ip, REG reg, UINT32 reg_size, UINT64 idx, CONTEXT *ctx){
+    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    PIN_GetContextRegval(ctx, reg, reg_val);
+    //printf("bit flip: instruction@0x%lx, register %s, original value=%ld ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
+    if (idx >= reg_size * 8) return;
+    // flip bit
+    reg_val[idx / 8] ^= 1 << (idx % 8);
+    //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
+    PIN_SetContextRegval(ctx, reg, reg_val);
+    free(reg_val);
+    return;
+}
+VOID RandomByte(ADDRINT Ip, REG reg, UINT32 reg_size, UINT64 injectbyte, UINT64 idx,  CONTEXT *ctx){
+    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    PIN_GetContextRegval(ctx, reg, reg_val);
+    //printf("random byte: instruction@0x%lx, register %s, original value=%ld ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
+    if (idx >= reg_size) return;
+    // inject random byte
+    reg_val[idx] = (UINT8)injectbyte;
+    //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
+    PIN_SetContextRegval(ctx, reg, reg_val);
+    free(reg_val);
+    return;
+}
+
+VOID InjectVal(ADDRINT Ip, REG reg, UINT64 injectValue, CONTEXT *ctx){
+    //printf("inject value: instruction@0x%lx, inject value of register %s with %ld\n", Ip, REG_StringShort(reg).c_str(), injectValue);
     PIN_SetContextRegval(ctx, reg, (UINT8 *)&injectValue);
     return;
 }
@@ -94,39 +154,6 @@ BOOL isValidIns(INS ins, VALID_INS_TYPE ins_type){
                     return true;
             }
         
-        case INS_TYPE_LOAD_ARGS:{
-            REG reg = REG_INVALID();
-            reg = INS_OperandReg(ins, 1);
-            switch (reg)
-            {
-                case REG_RDI:
-                case REG_EDI:
-                case REG_DI:
-                case REG_DIL:
-                case REG_RSI:
-                case REG_ESI:
-                case REG_SI:
-                case REG_SIL:
-                case REG_RDX:
-                case REG_EDX:
-                case REG_DX:
-                case REG_DL:
-                case REG_RCX:
-                case REG_ECX:
-                case REG_CX:
-                case REG_CL:
-                case REG_R8:
-                case REG_R8D:
-                case REG_R8W:
-                case REG_R9:
-                case REG_R9D:
-                case REG_R9W:
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
         default:
             return false;
     }
@@ -135,7 +162,6 @@ BOOL isValidIns(INS ins, VALID_INS_TYPE ins_type){
 VOID InstrumentIns(INS ins, ADDRINT baseAddr)
 //VOID InstrumentIns(INS ins, VOID *v)
 {
-    //if (injected == 1) return;
     xed_iclass_enum_t ins_opcode = (xed_iclass_enum_t)INS_Opcode(ins);
     if (ins_opcode != XED_ICLASS_MOV) return;
     //printf("instruction@%p: %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
@@ -145,101 +171,89 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
     Patchpoint pp = *it;
     patch_points.erase(it);
     if (patch_points.empty()) detach_flag = true;
-    //if ((INS_Address(ins) - baseAddr) != KnobNewAddr.Value()) return;
 
-    // if (ins_opcode == XED_ICLASS_MOV && INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1)){
-    // if (INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1) && insCount < MAX_INSNUM){
-    //     if (isValidIns(ins, INS_TYPE_LOAD_ARGS)){
-    //         REG reg2mut = REG_INVALID();
-    //         reg2mut = INS_OperandReg(ins, 1);
-    //         if (!IsValidReg(reg2mut)) return;
-            
-    //         instmap[INS_Address(ins)] = INS_Disassemble(ins); 
-    //         read_count++;
-    //         total_count++;
-    //         //printf("arg load instruction@%p, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
-    //         //printf("arg load instruction: %s\n", INS_Disassemble(ins).c_str());
+    printf("instruction@%p, mutation type: %ld, inject value=%ld, idx=%ld, end flag=%d\n", (void *)pp.addr, pp.mut_type, pp.injectValue, pp.mut_idx, detach_flag);
+    //AFUNPTR mut_func = NULL;
+    IPOINT ipoint;
+    REG reg2mut = REG_INVALID();
+    REGSET regsetIn, regsetOut;
+    UINT32 reg_size = 0;
 
-    //         // random select inst
-    //         if (total_count != inst2mut){
-    //             return;
-    //         }else{
-    //             injected = 1;
-    //         }
-            
-    //         // use REGSET
-    //         REGSET regsetIn, regsetOut;
-    //         REGSET_Insert(regsetIn, reg2mut);
-    //         REGSET_Insert(regsetIn, REG_FullRegName(reg2mut));
-    //         REGSET_Insert(regsetOut, reg2mut);
-    //         REGSET_Insert(regsetOut, REG_FullRegName(reg2mut));
-
-    //         srand(time(0));
-    //         uint64_t mask = rand() % MAXMUTVALUE;
-    //         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) MutateReg,
-    //                         IARG_INST_PTR,// application IP
-    //                         IARG_UINT32, reg2mut,
-    //                         IARG_UINT64, mask,
-    //                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
-    //                         IARG_END);
-    //     }
-    // }
-    printf("instruction@%p, inject value of %ld, %d\n", (void *)pp.addr, pp.injectValue, detach_flag);
     // TODO: use IPOINT to remove similar code
     if (INS_IsMemoryRead(ins) && !INS_IsRet(ins)){
         if (!INS_OperandIsReg(ins, 0)) return;
-        REG reg2mut = REG_INVALID();
         reg2mut = INS_OperandReg(ins, 0);
         if (!IsValidReg(reg2mut)) return;
-        
         //printf("data read instruction@%p, %s, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str(), REG_StringShort(reg2mut).c_str());
         //printf("data read instruction@%p, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str()); 
         //printf("data read instruction: %s\n", INS_Disassemble(ins).c_str());
 
-        // use REGSET
-        REGSET regsetIn, regsetOut;
         REGSET_Insert(regsetIn, reg2mut);
         REGSET_Insert(regsetIn, REG_FullRegName(reg2mut));
         REGSET_Insert(regsetOut, reg2mut);
         REGSET_Insert(regsetOut, REG_FullRegName(reg2mut));
-
-        // srand(time(0));
-        // uint64_t mask = rand() % MAXMUTVALUE;
-        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) MutateReg,
-                        IARG_INST_PTR,// application IP
-                        IARG_UINT32, reg2mut,
-                        IARG_UINT64, pp.injectValue,
-                        IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
-                        IARG_END);
+        reg_size = REG_Size(reg2mut);
+        ipoint = IPOINT_AFTER;
 
     }
 
     if (INS_IsMemoryWrite(ins)){
         if (!INS_OperandIsReg(ins, 1)) return;
-        REG reg2mut = REG_INVALID();
         reg2mut = INS_OperandReg(ins, 1);
         if (!IsValidReg(reg2mut)) return;
-
         //printf("data write instruction@%p, %s, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str(), REG_StringShort(reg2mut).c_str());
         //printf("data write instruction@%p, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
         //printf("data write instruction: %s\n", INS_Disassemble(ins).c_str());
 
-        // use regset
-        REGSET regsetIn, regsetOut;
         REGSET_Insert(regsetIn, reg2mut);
         REGSET_Insert(regsetIn, REG_FullRegName(reg2mut));
         REGSET_Insert(regsetOut, reg2mut);
         REGSET_Insert(regsetOut, REG_FullRegName(reg2mut));
+        reg_size = REG_Size(reg2mut);
+        ipoint = IPOINT_BEFORE;
+    }
 
-        // srand(time(0));
-        // uint64_t mask = rand() % MAXMUTVALUE;
-        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) MutateReg,
+    switch (pp.mut_type)
+    {
+        case BYTE_FLIP:
+            INS_InsertCall(ins, ipoint, (AFUNPTR)ByteFlip,
+                        IARG_INST_PTR,// application IP
+                        IARG_UINT32, reg2mut,
+                        IARG_UINT32, reg_size,
+                        IARG_UINT64, pp.mut_idx,
+                        IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
+                        IARG_END);
+            break;
+        case BIT_FLIP:
+            INS_InsertCall(ins, ipoint, (AFUNPTR)BitFlip,
+                        IARG_INST_PTR,// application IP
+                        IARG_UINT32, reg2mut,
+                        IARG_UINT32, reg_size,
+                        IARG_UINT64, pp.mut_idx,
+                        IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
+                        IARG_END);
+            break;
+        case RANDOM_BYTE:
+            INS_InsertCall(ins, ipoint, (AFUNPTR)RandomByte,
+                        IARG_INST_PTR,// application IP
+                        IARG_UINT32, reg2mut,
+                        IARG_UINT32, reg_size,
+                        IARG_UINT64, pp.injectValue,
+                        IARG_UINT64, pp.mut_idx,
+                        IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
+                        IARG_END);
+            break;
+        case INJECT_VAL:
+            INS_InsertCall(ins, ipoint, (AFUNPTR)InjectVal,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
                         IARG_UINT64, pp.injectValue,
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
-
+            break;
+        default:
+            printf("error: invalid mutation type\n");
+            return;
     }
 
 }
@@ -314,16 +328,19 @@ BOOL Init(){
 
     std::vector<std::string> args1 = get_tokens(KnobNewAddr.Value(), ",");
     std::vector<std::string> args2 = get_tokens(KnobNewVal.Value(), ",");
-    if (args1.size() != args2.size()) return false;
-    std::vector<std::string>::iterator it1, it2;
-    for (it1 = args1.begin(), it2 = args2.begin(); it1 != args1.end(), it2 != args2.end(); it1++, it2++){
+    std::vector<std::string> args3 = get_tokens(KnobNewMut.Value(), ",");
+    std::vector<std::string> args4 = get_tokens(KnobNewMutIdx.Value(), ",");
+
+    if (args1.size() != args2.size() || args2.size() != args3.size() || args3.size() != args4.size()) return false;
+    for (size_t i = 0; i < args1.size(); i ++){
         Patchpoint pp;
-        pp.addr = Uint64FromString(*it1);
-        pp.injectValue = Uint64FromString(*it2);
+        pp.addr = Uint64FromString(args1[i]);
+        pp.injectValue = Uint64FromString(args2[i]);
+        pp.mut_type = Uint64FromString(args3[i]);
+        pp.mut_idx = Uint64FromString(args4[i]);
         patch_points.push_back(pp);
-        std::cout << "pp: " << pp.addr << "," << pp.injectValue << std::endl;
+        std::cout << "pp: " << pp.addr << "," << pp.injectValue << "," << pp.mut_type << "," << pp.mut_idx << std::endl;
     }
-    
     return true;
 }
 

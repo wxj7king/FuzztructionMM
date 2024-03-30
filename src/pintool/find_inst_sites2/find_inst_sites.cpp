@@ -152,8 +152,8 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
         instmap[INS_Address(ins)] = INS_Disassemble(ins); 
         total_count++;
         //printf("data read instruction@%p, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str()); 
-        //printf("data read instruction: %s\n", INS_Disassemble(ins).c_str()); 
-        printf("%p,%s\n", (void *)(INS_Address(ins) - baseAddr), INS_Disassemble(ins).c_str());
+        //printf("%p,%s,%u\n", (void *)(INS_Address(ins) - baseAddr), INS_Disassemble(ins).c_str(), REG_Size(reg2mut));
+        printf("%p,%u\n", (void *)(INS_Address(ins) - baseAddr), REG_Size(reg2mut));
 
     }
 
@@ -167,8 +167,8 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
         instmap[INS_Address(ins)] = INS_Disassemble(ins); 
         total_count++;
         //printf("data write instruction@%p, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
-        //printf("data write instruction: %s\n",  INS_Disassemble(ins).c_str());
-        printf("%p,%s\n", (void *)(INS_Address(ins) - baseAddr), INS_Disassemble(ins).c_str());
+        //printf("%p,%s,%u\n", (void *)(INS_Address(ins) - baseAddr), INS_Disassemble(ins).c_str(), REG_Size(reg2mut));
+        printf("%p,%u\n", (void *)(INS_Address(ins) - baseAddr), REG_Size(reg2mut));
     }
     
 }

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <set>
+#include <algorithm>
 
 using std::cerr;
 using std::cout;
@@ -19,24 +20,23 @@ enum VALID_INS_TYPE{
     INS_TYPE_LOAD_ARGS
 };
 typedef struct patch_point{
-    unsigned int addr;
-    uint64_t injectValue;
+    ADDRINT addr;
+    UINT64 injectValue;
 } Patchpoint;
 typedef std::vector<Patchpoint> Patchpoints;
 std::set<std::string> lib_blacklist;
+Patchpoints patch_points;
+static BOOL detach_flag = false;
 
-KNOB<ADDRINT> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify nid to be replaced");
-KNOB<UINT64> KnobNewVal(KNOB_MODE_WRITEONCE, "pintool", "val", "512", "specify bits");
+KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify addrs of instructions");
+KNOB<std::string> KnobNewVal(KNOB_MODE_WRITEONCE, "pintool", "val", "512", "specify values to inject");
 
-VOID MutateReg(ADDRINT Ip, REG reg, UINT64 injectValue,CONTEXT *ctx){
+VOID MutateReg(ADDRINT Ip, REG reg, UINT64 injectValue, CONTEXT *ctx){
     //srand(time(0));
     //UINT32 injectValue = rand() % MAXMUTVALUE;
-    printf("instruction@0x%lx, inject value of register %s with %ld\n", Ip, REG_StringShort(reg).c_str(), injectValue);
+    //printf("instruction@0x%lx, inject value of register %s with %ld\n", Ip, REG_StringShort(reg).c_str(), injectValue);
     PIN_SetContextRegval(ctx, reg, (UINT8 *)&injectValue);
-    PIN_RemoveInstrumentation();
-    PIN_Detach();
     return;
-
 }
 
 BOOL IsValidReg(REG reg){
@@ -139,7 +139,13 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
     xed_iclass_enum_t ins_opcode = (xed_iclass_enum_t)INS_Opcode(ins);
     if (ins_opcode != XED_ICLASS_MOV) return;
     //printf("instruction@%p: %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
-    if ((INS_Address(ins) - baseAddr) != KnobNewAddr.Value()) return;
+    ADDRINT addr_offset = (INS_Address(ins) - baseAddr);
+    auto it = std::find_if(patch_points.begin(), patch_points.end(), [=](const Patchpoint& pp){return pp.addr == addr_offset;});
+    if (it == patch_points.end()) return;
+    Patchpoint pp = *it;
+    patch_points.erase(it);
+    if (patch_points.empty()) detach_flag = true;
+    //if ((INS_Address(ins) - baseAddr) != KnobNewAddr.Value()) return;
 
     // if (ins_opcode == XED_ICLASS_MOV && INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1)){
     // if (INS_OperandIsReg(ins, 0) && INS_OperandIsReg(ins, 1) && insCount < MAX_INSNUM){
@@ -178,7 +184,7 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
     //                         IARG_END);
     //     }
     // }
-    printf("instruction@%p, inject value of %ld\n", (void *)(INS_Address(ins) - baseAddr), KnobNewVal.Value());
+    printf("instruction@%p, inject value of %ld, %d\n", (void *)pp.addr, pp.injectValue, detach_flag);
     // TODO: use IPOINT to remove similar code
     if (INS_IsMemoryRead(ins) && !INS_IsRet(ins)){
         if (!INS_OperandIsReg(ins, 0)) return;
@@ -199,10 +205,10 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
 
         // srand(time(0));
         // uint64_t mask = rand() % MAXMUTVALUE;
-        INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR) MutateReg,
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) MutateReg,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
-                        IARG_UINT64, KnobNewVal.Value(),
+                        IARG_UINT64, pp.injectValue,
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
 
@@ -230,12 +236,12 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) MutateReg,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
-                        IARG_UINT64, KnobNewVal.Value(),
+                        IARG_UINT64, pp.injectValue,
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
 
     }
-    
+
 }
 
 const char* StripPath(const char* path)
@@ -249,6 +255,7 @@ const char* StripPath(const char* path)
 
 // XXX: cannot use routine because the changed register value will not saved
 VOID InstrumentTrace(TRACE trace, VOID *v){
+    if (detach_flag) return;
     ADDRINT baseAddr = 0;
     RTN rtn = TRACE_Rtn(trace);
     std::string img_name;
@@ -269,7 +276,7 @@ VOID InstrumentTrace(TRACE trace, VOID *v){
     }
 }
 
-void Detatched(VOID *v){std::cerr << endl << "Detached at addr: " << KnobNewAddr.Value() << endl;}
+void Detatched(VOID *v){std::cerr << endl << "Detached from pintool!" << endl;}
 
 void Fini(INT32 code, void *v){
 	// printf("read counts: %ld\n", read_count);
@@ -286,17 +293,44 @@ INT32 Usage()
     return -1;
 }
 
-VOID Init(){
+std::vector<std::string> get_tokens(std::string args, std::string del){
+    size_t pos_s = 0;
+    size_t pos_e;
+    std::string token;
+    std::vector<std::string> vec;
+    while((pos_e = args.find(del, pos_s)) != std::string::npos){
+        token = args.substr(pos_s, pos_e - pos_s);
+        pos_s = pos_e + del.length();
+        vec.push_back(token);
+    }
+    vec.push_back(args.substr(pos_s));
+    return vec;
+}
+
+BOOL Init(){
     lib_blacklist.insert("ld-linux-x86-64.so.2");
     lib_blacklist.insert("[vdso]");
     lib_blacklist.insert("libc.so.6");
-    return;
+
+    std::vector<std::string> args1 = get_tokens(KnobNewAddr.Value(), ",");
+    std::vector<std::string> args2 = get_tokens(KnobNewVal.Value(), ",");
+    if (args1.size() != args2.size()) return false;
+    std::vector<std::string>::iterator it1, it2;
+    for (it1 = args1.begin(), it2 = args2.begin(); it1 != args1.end(), it2 != args2.end(); it1++, it2++){
+        Patchpoint pp;
+        pp.addr = Uint64FromString(*it1);
+        pp.injectValue = Uint64FromString(*it2);
+        patch_points.push_back(pp);
+        std::cout << "pp: " << pp.addr << "," << pp.injectValue << std::endl;
+    }
+    
+    return true;
 }
 
 int main(INT32 argc, CHAR* argv[])
 {   
     if (PIN_Init(argc, argv)) return Usage();
-    Init();
+    if (!Init()) return Usage();
     //PIN_SetSyntaxATT();
     //INS_AddInstrumentFunction(InstrumentIns, 0);
     TRACE_AddInstrumentFunction(InstrumentTrace, 0);

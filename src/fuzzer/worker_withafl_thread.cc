@@ -33,6 +33,7 @@
 typedef struct patch_point{
     uint64_t addr;
     uint64_t injectValue;
+    uint8_t reg_size;
 } Patchpoint;
 typedef struct test_case{
     char filename[255];
@@ -161,8 +162,10 @@ Patchpoints find_patchpoints(std::string out_dir){
         if (fgets(buffer, 128, pipe.get()) != NULL){
             Patchpoint pp;
             result = buffer;
-            pp.addr = std::stoul(result.substr(0, result.find(',')), nullptr, 16);
-            //printf("%lx, %s\n", pp.addr, buffer);
+            size_t del_idx = result.find(',');
+            pp.addr = std::stoul(result.substr(0, del_idx), nullptr, 16); 
+            pp.reg_size = (uint8_t)std::stoul(result.substr(del_idx + 1, result.length()));
+            //printf("%lx, %u, %s\n", pp.addr, pp.reg_size, buffer);
             patch_points.push_back(pp);
         }
     }
@@ -242,11 +245,18 @@ TestCase fuzz_one(int id, std::string &addrs_str, std::string &injectValues_str,
     // argv and envp
     source_argv.push_back("/home/proj/proj/tools/pin-3.28-98749-g6643ecee5-gcc-linux/pin");
     source_argv.push_back("-t");
-    source_argv.push_back("/home/proj/proj/src/pintool/mutate_ins2/obj-intel64/mutate_ins.so");
+    //source_argv.push_back("/home/proj/proj/src/pintool/mutate_ins2/obj-intel64/mutate_ins.so");
+    source_argv.push_back("/home/proj/proj/src/pintool/mutate_ins_multi/obj-intel64/mutate_ins.so");
     source_argv.push_back("-addr");
     source_argv.push_back(addrs_str.c_str());
+    //source_argv.push_back("36636,852571,1960393");
     source_argv.push_back("-val");
     source_argv.push_back(injectValues_str.c_str());
+    source_argv.push_back("-mut");
+    source_argv.push_back("4,4,4");
+    source_argv.push_back("-idx");
+    source_argv.push_back("0,0,0");
+    //source_argv.push_back("1354,1192,352");
     source_argv.push_back("--");
     source_argv.push_back("/home/proj/proj/uninstrumented/openssl/apps/openssl");
     source_argv.push_back("genrsa");
@@ -266,6 +276,7 @@ TestCase fuzz_one(int id, std::string &addrs_str, std::string &injectValues_str,
     // for(it = source_argv.begin(); it != source_argv.end(); it++){
     //     printf("%s ", *it);
     // }
+    // printf("\n");
     
     // TODO: set maximum file size limit
     // TODO: replace system() with execve()
@@ -285,13 +296,15 @@ TestCase fuzz_one(int id, std::string &addrs_str, std::string &injectValues_str,
         limit.rlim_cur = MAX_FILE_SIZE;
         limit.rlim_max = MAX_FILE_SIZE;
         assert(setrlimit(RLIMIT_FSIZE, &limit) == 0);
+        signal(SIGALRM, timeout_handler);
+        alarm(TIMEOUT);
         execve(source_argv[0], const_cast<char* const*>(source_argv.data()), const_cast<char* const*>(source_envp.data()));
         perror("execve failed!");
         exit(-1);
     }
 
-    signal(SIGALRM, timeout_handler);
-    alarm(TIMEOUT);
+    // signal(SIGALRM, timeout_handler);
+    // alarm(TIMEOUT);
     int status;
     waitpid(pid, &status, 0);
     // if(ret != 0){
@@ -600,7 +613,8 @@ int main(){
         child_process();
         _exit(0);
     }
-    
+    // wait(NULL);
+    // return 1;
 
     signal(SIGINT, signal_handler);
     std::vector<const char*> afl_envp;

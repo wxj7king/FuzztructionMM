@@ -25,6 +25,7 @@
 typedef struct patch_point{
     uint64_t addr;
     uint64_t injectValue;
+    uint8_t reg_size;
 } Patchpoint;
 typedef struct test_case{
     char filename[255];
