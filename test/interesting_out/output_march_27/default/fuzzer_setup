@@ -1,0 +1,7 @@
+# environment variables:
+AFL_CUSTOM_MUTATOR_LIBRARY=/home/proj/proj/src/afl_customut/inject_ts_multi.so
+AFL_CUSTOM_INFO_PROGRAM=/home/proj/proj/openssl/apps/openssl
+AFL_CUSTOM_INFO_PROGRAM_ARGV=rsa -check -in @@ -passin pass:xxxxx
+AFL_CUSTOM_INFO_OUT=/home/proj/proj/test/afl_test1/output/default
+# command line:
+'/usr/local/bin/afl-fuzz' '-i' '/home/proj/proj/test/afl_test1/input' '-o' '/home/proj/proj/test/afl_test1/output' '--' '/home/proj/proj/openssl/apps/openssl' 'rsa' '-check' '-in' '@@' '-passin' 'pass:xxxxx'

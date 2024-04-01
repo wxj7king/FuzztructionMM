@@ -1,7 +1,0 @@
-# environment variables:
-AFL_CUSTOM_MUTATOR_LIBRARY=/home/proj/proj/test/branch_flip.so
-AFL_CUSTOM_INFO_PROGRAM=/home/proj/proj/openssl/apps/openssl
-AFL_CUSTOM_INFO_PROGRAM_ARGV=rsa -check -in @@ -passin pass:xxxxx
-AFL_CUSTOM_INFO_OUT=output//default
-# command line:
-'afl-fuzz' '-i' 'input_2/' '-o' 'output/' '--' '/home/proj/proj/openssl/apps/openssl' 'rsa' '-check' '-in' '@@' '-passin' 'pass:xxxxx'

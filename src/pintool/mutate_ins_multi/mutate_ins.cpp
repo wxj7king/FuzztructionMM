@@ -56,10 +56,10 @@ VOID MutateReg(ADDRINT Ip, REG reg, UINT32 reg_size, UINT64 injectValue, CONTEXT
 }
 
 VOID ByteFlip(ADDRINT Ip, REG reg, UINT32 reg_size, UINT64 idx, CONTEXT *ctx){
+    if (idx >= reg_size) return;
     UINT8 *reg_val = (UINT8 *)malloc(reg_size);
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("byte flip: instruction@0x%lx, register %s, original value=%ld ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
-    if (idx >= reg_size) return;
     // flip byte
     reg_val[idx] ^= 0xff;
     //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
@@ -69,10 +69,10 @@ VOID ByteFlip(ADDRINT Ip, REG reg, UINT32 reg_size, UINT64 idx, CONTEXT *ctx){
 }
 
 VOID BitFlip(ADDRINT Ip, REG reg, UINT32 reg_size, UINT64 idx, CONTEXT *ctx){
+    if (idx >= reg_size * 8) return;
     UINT8 *reg_val = (UINT8 *)malloc(reg_size);
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("bit flip: instruction@0x%lx, register %s, original value=%ld ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
-    if (idx >= reg_size * 8) return;
     // flip bit
     reg_val[idx / 8] ^= 1 << (idx % 8);
     //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
@@ -81,10 +81,10 @@ VOID BitFlip(ADDRINT Ip, REG reg, UINT32 reg_size, UINT64 idx, CONTEXT *ctx){
     return;
 }
 VOID RandomByte(ADDRINT Ip, REG reg, UINT32 reg_size, UINT64 injectbyte, UINT64 idx,  CONTEXT *ctx){
+    if (idx >= reg_size) return;
     UINT8 *reg_val = (UINT8 *)malloc(reg_size);
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("random byte: instruction@0x%lx, register %s, original value=%ld ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
-    if (idx >= reg_size) return;
     // inject random byte
     reg_val[idx] = (UINT8)injectbyte;
     //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
@@ -322,10 +322,12 @@ std::vector<std::string> get_tokens(std::string args, std::string del){
 }
 
 BOOL Init(){
+    if (KnobNewAddr.Value() == "" || KnobNewVal.Value() == "" || KnobNewMut.Value() == "" || KnobNewMutIdx.Value() == "") return false;
+    
     lib_blacklist.insert("ld-linux-x86-64.so.2");
     lib_blacklist.insert("[vdso]");
     lib_blacklist.insert("libc.so.6");
-
+    
     std::vector<std::string> args1 = get_tokens(KnobNewAddr.Value(), ",");
     std::vector<std::string> args2 = get_tokens(KnobNewVal.Value(), ",");
     std::vector<std::string> args3 = get_tokens(KnobNewMut.Value(), ",");
