@@ -21,6 +21,7 @@
 #include <iostream>
 #include <algorithm>
 #include <mutex>
+#include <condition_variable>
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 
@@ -31,6 +32,7 @@
 #define NUM_TESTCASE 3
 #define TIMEOUT 5
 #define RANDOM_MAX_TRIES 1
+#define MAX_INTEREST_SIZE 1024 * 1024
 typedef struct patch_point{
     uint64_t addr;
     uint64_t injectValue;
@@ -62,14 +64,14 @@ struct new_ts_config{
     size_t random_num;
 }new_ts_config;
 enum MUTATION_TYPE{
-    BYTE_FLIP = 1,
-    BIT_FLIP = 2,
-    RANDOM_BYTE = 3,
-    INJECT_VAL = 4,
-    U8ADD = 5,
-    RANDOM_BYTE0 = 6
+    BYTE_FLIP = 0,
+    BIT_FLIP,
+    RANDOM_BYTE,
+    INJECT_VAL,
+    U8ADD,
+    RANDOM_BYTE0
 };
-int interest_val[] = {0, 1, 2};
+
 struct mq_attr my_mqattr;
 pid_t afl_pid;
 pid_t worker_pid;
@@ -82,6 +84,14 @@ pthread_t threads[NUM_THREAD];
 ThreadArg targs[NUM_THREAD];
 std::string out_dirs[NUM_THREAD];
 std::string log_path = "";
+
+template <typename T>
+class MyQueue {
+    public:
+        std::queue<T> queue;
+        mutable std::mutex mutex;
+};
+static MyQueue<Patchpoints> interest_pps;
 
 void timeout_handler(int sig){
     timeout_flag = 1;
@@ -188,7 +198,7 @@ Patchpoints find_patchpoints(std::string out_dir){
 
 }
 
-void generate_testcases(Patchpoints &pps, Patchpoints &unfuzzed_pps, Pps2fuzz &selected_pps, InterestPps &interest_pps){
+void generate_testcases(Patchpoints &pps, Patchpoints &unfuzzed_pps, Pps2fuzz &selected_pps){
     selected_pps.interest_pps.clear();
     selected_pps.unfuzzed_pps.clear();
     selected_pps.random_pps.clear();
@@ -219,13 +229,18 @@ void generate_testcases(Patchpoints &pps, Patchpoints &unfuzzed_pps, Pps2fuzz &s
     assert(counter == 0);
 
     size_t select_interest = new_ts_config.interest_num;
-    real_select = std::min(interest_pps.size(), select_interest);
-    for (size_t i = 0; i < real_select; i++){
-        selected_pps.interest_pps.push_back(interest_pps.front());
-        interest_pps.pop();
-        res--;
+    {
+        std::lock_guard<std::mutex> lock(interest_pps.mutex);
+        real_select = std::min(interest_pps.queue.size(), select_interest);
+        for (size_t i = 0; i < real_select; i++){
+            Patchpoints tmp_pps = interest_pps.queue.front();
+            selected_pps.interest_pps.push_back(tmp_pps);
+            interest_pps.queue.pop();
+            interest_pps.queue.push(tmp_pps);
+            res--;
+        }
     }
-
+    
     std::random_device rd;
     std::mt19937 gen(rd()); // Mersenne Twister engine
     std::uniform_int_distribution<int> dist_idx(0, pps.size());
@@ -319,9 +334,11 @@ TestCase fuzz_one(int id, std::string &addrs_str, std::string &injectValues_str,
         struct rlimit limit;
         limit.rlim_cur = MAX_FILE_SIZE;
         limit.rlim_max = MAX_FILE_SIZE;
-        assert(setrlimit(RLIMIT_FSIZE, &limit) == 0);
+        // assert(setrlimit(RLIMIT_FSIZE, &limit) == 0);
+        if (setrlimit(RLIMIT_FSIZE, &limit) != 0) perror("setrlimit() failed!\n");
         // restrict output dir?
-        //assert(chdir(out_dirs[id].c_str()));
+        // assert(chdir(out_dirs[id].c_str()) == 0);
+        if (chdir(out_dirs[id].c_str()) != 0) perror("chdir() failed!\n");
         // set timeout
         signal(SIGALRM, timeout_handler);
         alarm(TIMEOUT);
@@ -499,6 +516,22 @@ void random_byte(mqd_t &mqd, int id, Patchpoints &pps, Hash2pps &hash2pps, int l
     
 }
 
+void inject_val(mqd_t &mqd, int id, Patchpoints &pps, Hash2pps &hash2pps, int level){
+    std::string addrs_str = "", injectValues_str = "", muts_str = "", idxes_str = "";
+    for (size_t i = 0; i < pps.size(); i ++){
+        addrs_str += (std::to_string(pps[i].addr) + ",");
+        injectValues_str += (std::to_string(0) + ",");
+        muts_str += (std::to_string(INJECT_VAL) + ",");
+        idxes_str += (std::to_string(0) + ",");
+    }
+    addrs_str.pop_back();
+    injectValues_str.pop_back();
+    muts_str.pop_back();
+    idxes_str.pop_back();
+    TestCase ts = fuzz_one(id, addrs_str, injectValues_str, muts_str, idxes_str, hash2pps, pps, level);
+    mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+}
+
 void u8_add(mqd_t &mqd, int id, Patchpoints &pps, Hash2pps &hash2pps){
     std::string addrs_str = "", injectValues_str = "", muts_str = "", idxes_str = "";
     for (size_t i = 0; i < pps.size(); i ++){
@@ -516,9 +549,27 @@ void u8_add(mqd_t &mqd, int id, Patchpoints &pps, Hash2pps &hash2pps){
 
 }
 
-// void mix_mutations(mqd_t &mqd, int id, Patchpoints &pps, Hash2pps &hash2pps){
-
-// }
+void combine_mutations(mqd_t &mqd, int id, Patchpoints &pps, Hash2pps &hash2pps){
+    std::string addrs_str = "", injectValues_str = "", muts_str = "", idxes_str = "";
+    std::random_device rd;
+    std::mt19937 gen(rd()); // Mersenne Twister engine
+    std::uniform_int_distribution<uint8_t> dist_u8;
+    uint8_t mut_type = 0;
+    
+    for (size_t i = 0; i < pps.size(); i ++){
+        addrs_str += (std::to_string(pps[i].addr) + ",");
+        mut_type = dist_u8(gen) % 6;
+        muts_str += (std::to_string(mut_type) + ",");
+        injectValues_str += (std::to_string(0) + ",");
+        idxes_str += (std::to_string(0) + ",");
+    }
+    addrs_str.pop_back();
+    injectValues_str.pop_back();
+    muts_str.pop_back();
+    idxes_str.pop_back();
+    TestCase ts = fuzz_one(id, addrs_str, injectValues_str, muts_str, idxes_str, hash2pps, pps, 2);
+    mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+}
 
 void fuzz_candidates(mqd_t &mqd, int id, Pps2fuzz &selected_pps, Hash2pps &hash2pps, int level){
     // unfuzzed patchpoints
@@ -527,15 +578,21 @@ void fuzz_candidates(mqd_t &mqd, int id, Pps2fuzz &selected_pps, Hash2pps &hash2
         bit_flip(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, level);
         random_byte(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, level, RANDOM_BYTE, RANDOM_MAX_TRIES);
         random_byte(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, level, RANDOM_BYTE0, RANDOM_MAX_TRIES);
-        u8_add(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps);
-
-        //inject_value();
+        inject_val(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, level);
+        if (level == 2){
+            u8_add(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps);
+            combine_mutations(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps);
+        }
     }
     //printf("%d: after unfuzzed\n", id);
     // interesting patchpoints
     for (size_t i = 0; i < selected_pps.interest_pps.size(); i++){
         random_byte(mqd, id, selected_pps.interest_pps[i], hash2pps, level, RANDOM_BYTE, RANDOM_MAX_TRIES);
         random_byte(mqd, id, selected_pps.interest_pps[i], hash2pps, level, RANDOM_BYTE0, RANDOM_MAX_TRIES);
+        inject_val(mqd, id, selected_pps.interest_pps[i], hash2pps, level);
+        if (level == 2){
+            combine_mutations(mqd, id, selected_pps.interest_pps[i], hash2pps);
+        }
     }
     //printf("%d: after interest\n", id);
     // random patchpoints
@@ -544,7 +601,11 @@ void fuzz_candidates(mqd_t &mqd, int id, Pps2fuzz &selected_pps, Hash2pps &hash2
         bit_flip(mqd, id, selected_pps.random_pps[i], hash2pps, level);
         random_byte(mqd, id, selected_pps.random_pps[i], hash2pps, level, RANDOM_BYTE, RANDOM_MAX_TRIES);
         random_byte(mqd, id, selected_pps.random_pps[i], hash2pps, level, RANDOM_BYTE0, RANDOM_MAX_TRIES);
-        u8_add(mqd, id, selected_pps.random_pps[i], hash2pps);
+        inject_val(mqd, id, selected_pps.random_pps[i], hash2pps, level);
+        if (level == 2){
+            u8_add(mqd, id, selected_pps.random_pps[i], hash2pps);
+            combine_mutations(mqd, id, selected_pps.random_pps[i], hash2pps);
+        }
     }
     //printf("%d: after random\n", id);
     
@@ -572,7 +633,7 @@ void fuzz_candidates(mqd_t &mqd, int id, Pps2fuzz &selected_pps, Hash2pps &hash2
 //     // return tokens;
 // }
 
-void save_interest_pps(InterestPps &interest_pps, Hash2pps &hash2pps, StringSet &afl_files, StringSet &afl_files_hashes){
+void save_interest_pps(Hash2pps &hash2pps, StringSet &afl_files, StringSet &afl_files_hashes){
     std::filesystem::path afl_output_dir = "/home/proj/proj/test/afl_test1/output/default/queue/";
     std::string orig_file = "orig";
     for (const auto& file : std::filesystem::directory_iterator(afl_output_dir)){
@@ -589,29 +650,33 @@ void save_interest_pps(InterestPps &interest_pps, Hash2pps &hash2pps, StringSet 
     }
     
     int pps_cnt = 0;
-    for (const auto& pair : hash2pps){
-        if (afl_files_hashes.find(pair.first) != afl_files_hashes.end()){
-            Patchpoints tmp_pps = pair.second;
-            std::string addrs_str  = "";
-            for (size_t i = 0; i < tmp_pps.size(); i++)
-            {  
-                addrs_str += (std::to_string(tmp_pps[i].addr) + ",");
+    {
+        std::lock_guard<std::mutex> lock(interest_pps.mutex);
+
+        for (const auto& pair : hash2pps){
+            if (afl_files_hashes.find(pair.first) != afl_files_hashes.end()){
+                Patchpoints tmp_pps = pair.second;
+                std::string addrs_str  = "";
+                for (size_t i = 0; i < tmp_pps.size(); i++)
+                {  
+                    addrs_str += (std::to_string(tmp_pps[i].addr) + ",");
+                }
+                addrs_str.pop_back();
+                //printf("find interesting pps: %s, %s\n", pair.first.c_str(), addrs_str.c_str());
+                std::ostringstream oss;
+                oss << "[*] Find interesting pps: " << pair.first.c_str() << ", " << addrs_str.c_str();
+                output_log(oss.str(), log_path);
+                //printf("%s\n", oss.str().c_str());
+                if (interest_pps.queue.size() > MAX_INTEREST_SIZE) interest_pps.queue.pop();
+                interest_pps.queue.push(tmp_pps);
+
             }
-            addrs_str.pop_back();
-            //printf("find interesting pps: %s, %s\n", pair.first.c_str(), addrs_str.c_str());
-            std::ostringstream oss;
-            oss << "[*] Find interesting pps: " << pair.first.c_str() << ", " << addrs_str.c_str();
-            output_log(oss.str(), log_path);
-            //printf("%s\n", oss.str().c_str());
-
-            interest_pps.push(tmp_pps);
-
         }
     }
 
     hash2pps.clear();
     // std::ostringstream oss;
-    // oss << "[*] Saved " << pps_cnt <<" interesting pps; " << "current interesting pps: " << insterest_pps.size();
+    // oss << "[*] Saved " << pps_cnt <<" interesting pps; " << "current interesting pps: " << interest_pps.queue.size();
     // output_log(oss.str(), log_path);
 
 }
@@ -627,6 +692,11 @@ void *thread_worker(void* arg){
             return nullptr;
         }
     }
+
+    sigset_t block;
+    sigemptyset(&block);
+    sigaddset(&block, SIGINT);
+    pthread_sigmask(SIG_BLOCK, &block, NULL);
     //printf("created dir: %s\n", out_dirs[targ->tid].c_str());
     // Patchpoints pps = find_patchpoints(out_dir);
     // Patchpoints unfuzzed_pps = pps;
@@ -634,7 +704,6 @@ void *thread_worker(void* arg){
     // std::mt19937 gen(rd());
     // std::shuffle(unfuzzed_pps.begin(), unfuzzed_pps.end(), gen);
 
-    InterestPps insterest_pps;
     Pps2fuzz pps2fuzz;
     Hash2pps hash2pps;
     StringSet afl_files;
@@ -648,14 +717,11 @@ void *thread_worker(void* arg){
     
     //sprintf(ts.filename, "From child process %d", id);
     while(1){
-        generate_testcases(pps, unfuzzed_pps, pps2fuzz, insterest_pps);
+        generate_testcases(pps, unfuzzed_pps, pps2fuzz);
         //printf("%d: after generate testcases\n", targ->tid);
-        //TestCase ts = generate_testcase(targ->tid, pps);
         fuzz_candidates(mqd, targ->tid, pps2fuzz, hash2pps, 2);
         //printf("%d: after fuzz candidates\n", targ->tid);
-        //mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
-        //printf("%d: before save\n", targ->tid);
-        save_interest_pps(insterest_pps, hash2pps, afl_files, afl_files_hashes);
+        save_interest_pps(hash2pps, afl_files, afl_files_hashes);
         //printf("%d: after save\n", targ->tid);
         
     }
@@ -693,7 +759,7 @@ void worker_sig_handler(int sig){
         }
         
     }
-    printf("worker process exited!\n");
+    printf("worker process exited by ctrl-c\n");
     _exit(0);
 }
 

@@ -20,12 +20,12 @@ enum VALID_INS_TYPE{
     INS_TYPE_MEM_WRITE,
 };
 enum MUTATION_TYPE{
-    BYTE_FLIP = 1,
-    BIT_FLIP = 2,
-    RANDOM_BYTE = 3,
-    INJECT_VAL = 4,
-    U8ADD = 5,
-    RANDOM_BYTE0 = 6
+    BYTE_FLIP = 0,
+    BIT_FLIP,
+    RANDOM_BYTE,
+    INJECT_VAL,
+    U8ADD,
+    RANDOM_BYTE0
 };
 #define RANDOM_MAX_STEPS 1024
 typedef struct patch_point{
@@ -47,6 +47,7 @@ std::random_device rd;
 std::mt19937 gen(rd()); // Mersenne Twister engine
 std::uniform_int_distribution<UINT8> dist_byte;
 std::uniform_int_distribution<UINT8> dist_idx;
+static int interest_val[] = {0, 1, 2};
 
 KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify addrs of instructions");
 KNOB<std::string> KnobNewVal(KNOB_MODE_WRITEONCE, "pintool", "val", "512", "specify values to inject, pad 0 if not used");
@@ -162,9 +163,13 @@ VOID U8Add(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 cur_pps, CONTEXT *ctx){
     return;
 }
 
-VOID InjectVal(ADDRINT Ip, REG reg, UINT64 injectValue, CONTEXT *ctx){
+VOID InjectVal(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
+    if (reg_size == 0) return;
+    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    reg_val[0] = interest_val[dist_byte(gen) % 3];
     //printf("inject value: instruction@0x%lx, inject value of register %s with %ld\n", Ip, REG_StringShort(reg).c_str(), injectValue);
-    PIN_SetContextRegval(ctx, reg, (UINT8 *)&injectValue);
+    PIN_SetContextRegval(ctx, reg, reg_val);
+    free(reg_val);
     return;
 }
 
@@ -315,7 +320,7 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
             INS_InsertCall(ins, ipoint, (AFUNPTR)InjectVal,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
-                        IARG_UINT64, pp.injectValue,
+                        IARG_UINT32, reg_size,
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
             break;
