@@ -246,6 +246,7 @@ int main(INT32 argc, CHAR* argv[])
 {   
     PIN_InitSymbols();
     if (PIN_Init(argc, argv)) return Usage();
+    Init();
     //PIN_SetSyntaxATT();
     //INS_AddInstrumentFunction(InstrumentIns, 0);
     //RTN_AddInstrumentFunction(InstrumentRtn, 0);
