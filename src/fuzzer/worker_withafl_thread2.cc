@@ -31,16 +31,15 @@
 #define SHM_NAME "/FTMM_SHM"
 #define MAX_FILE_SIZE 16 * 1024
 #define NUM_THREAD 8
-#define SOURCE_TIMEOUT 5
-#define RANDOM_MAX_TRIES 1
+#define SOURCE_TIMEOUT 3
+
 #define RANDOM_MAX_STEPS 32
 #define MAX_INTEREST_SIZE 1024 * 1024
 #define MAX_ITERATION 1024
 #define MAX_REG_SIZE 16
-#define MAX_MUT_PPS 5
+#define MAX_NUM_ONE_MUT 1184
 typedef struct patch_point{
     uint64_t addr;
-    uint64_t injectValue;
     uint8_t reg_size;
 } Patchpoint;
 typedef struct test_case{
@@ -49,35 +48,19 @@ typedef struct test_case{
 }TestCase;
 typedef std::vector<Patchpoint> Patchpoints;
 typedef struct pps2fuzz{
-    std::vector<Patchpoints> unfuzzed_pps;
-    std::vector<Patchpoints> interest_pps;
-    std::vector<Patchpoints> random_pps;
+    Patchpoints unfuzzed_pps;
+    Patchpoints interest_pps;
+    Patchpoints random_pps;
 }Pps2fuzz;
-typedef std::map<std::string, Patchpoints> Hash2pps;
+typedef std::map<std::string, Patchpoint> Hash2pp;
 typedef std::set<std::string> StringSet;
 typedef std::map<std::string, std::string> PintoolArgs;
 typedef struct thread_arg{
     int pid;
     int tid;
 }ThreadArg;
-template <typename T>
-class MyQueue {
-    public:
-        std::queue<T> queue;
-        std::mutex mutex;
-};
-class Addr2iter{
-    public:
-        std::map<uint64_t, uint32_t> map;
-        std::mutex mutex;
-};
-class Patchpointslock{
-    public:
-        Patchpoints pps;
-        std::mutex mutex;
-};
 typedef struct masks{
-    uint32_t num_iter;
+    uint64_t num_iter;
     uint64_t addr;
     uint64_t cur_iter;
     unsigned char masks[(MAX_ITERATION + 1) * MAX_REG_SIZE];
@@ -88,6 +71,29 @@ typedef struct shm_para{
     unsigned char *shm_base_ptr;
     size_t size_in_bytes;
 }Shm_para;
+typedef struct pps_lock{
+    Patchpoints pps;
+    std::mutex mutex;
+}Patchpointslock;
+
+template <typename T>
+class MyQueue {
+    public:
+        std::queue<T> queue;
+        std::mutex mutex;
+};
+class Addr2iter{
+    public:
+        std::map<uint64_t, uint64_t> map;
+        std::mutex mutex;
+};
+
+class Interestpp2masks{
+    public:
+        std::map< uint64_t, std::vector<Masks> > map;
+        std::mutex mutex;
+};
+
 
 // global variables
 struct new_ts_config{
@@ -108,7 +114,6 @@ enum MUTATION_TYPE{
 struct mq_attr my_mqattr;
 pid_t afl_pid;
 pid_t worker_pid;
-Patchpoints unfuzzed_pps;
 Patchpointslock source_pps;
 Patchpointslock source_unfuzzed_pps;
 std::mutex log_mtx;
@@ -117,9 +122,11 @@ pthread_t threads[NUM_THREAD];
 ThreadArg targs[NUM_THREAD];
 std::string out_dirs[NUM_THREAD];
 std::string log_path = "";
-static MyQueue<Patchpoints> interest_pps;
+static MyQueue<Patchpoint> interest_pps;
 Addr2iter addr2iter;
+Interestpp2masks addr2masks_global;
 Shm_para shm_para;
+std::string work_dir = "/tmp/ftmm_workdir";
 
 // funcs
 void timeout_handler(int sig){
@@ -184,7 +191,7 @@ void output_log(const std::string& msg, const std::string& log_path){
 }
 
 bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points){
-    std::string source_out = out_dir + "/tmp_rsak";
+    std::string source_out = out_dir + "/tmp_source";
     std::string find_ins_out = out_dir + "/tmp_pintool";
     //out_dir = out_dir + "/tmp_rsak";
     //std::string cmd = "LD_LIBRARY_PATH=/home/proj/proj/uninstrumented/openssl/ /home/proj/proj/tools/pin-3.28-98749-g6643ecee5-gcc-linux/pin -t /home/proj/proj/src/pintool/find_inst_sites2/obj-intel64/find_inst_sites.so -- /home/proj/proj/uninstrumented/openssl/apps/openssl genrsa -aes128 -passout pass:xxxxx -out @ 512 2>/dev/null";
@@ -227,14 +234,14 @@ bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points){
         return false;
     }
 
-    if (!std::filesystem::remove(source_out)) printf("delete file failed: %s\n", source_out.c_str());
-    if (!std::filesystem::remove(find_ins_out)) printf("delete file failed: %s\n", find_ins_out.c_str());
+    if (!std::filesystem::remove(source_out)) printf("find pps: delete file source_out failed: %s\n", source_out.c_str());
+    if (!std::filesystem::remove(find_ins_out)) printf("find pps: delete file find_ins_out failed: %s\n", find_ins_out.c_str());
     
     return true;
 }
 
-size_t get_iter(std::string out_dir, std::string& addr_str){
-    out_dir = out_dir + "/tmp_rsak2";
+size_t get_iter(std::string out_dir, std::string addr_str){
+    out_dir = out_dir + "/tmp_get_iter";
     std::ostringstream oss;
     oss << "LD_LIBRARY_PATH=/home/proj/proj/uninstrumented/openssl/" << " ";
     oss << "/home/proj/proj/tools/pin-3.28-98749-g6643ecee5-gcc-linux/pin" << " ";
@@ -255,7 +262,7 @@ size_t get_iter(std::string out_dir, std::string& addr_str){
     std::string cmd = oss.str();
     char buffer[128] = {};
     std::string result = "";
-    size_t addr, iter_num;
+    size_t addr, iter_num = 0;
 
     std::shared_ptr<FILE> pipe(popen(cmd.c_str(), "r"), pclose);
     if (!pipe) throw std::runtime_error("popen() failed!");
@@ -268,7 +275,10 @@ size_t get_iter(std::string out_dir, std::string& addr_str){
             //printf("0x%lx, %lu\n", addr, hits);
         }
     }
-    if (!std::filesystem::remove(out_dir)) perror("delete file failed\n");
+    if (std::filesystem::exists(out_dir)){
+        if (!std::filesystem::remove(out_dir)) perror("get_iter: delete file failed\n");
+    }
+    
     return iter_num;
 }
 
@@ -277,23 +287,19 @@ void generate_testcases(Patchpointslock &source_pps, Patchpointslock &unfuzzed_p
     selected_pps.unfuzzed_pps.clear();
     selected_pps.random_pps.clear();
 
-    size_t select_sum = new_ts_config.interest_num + new_ts_config.random_num + new_ts_config.unfuzzed_num;
-    size_t res = select_sum;
-    bool empty_unfuzzed = unfuzzed_pps.pps.empty() ? true : false;
+    size_t res = new_ts_config.interest_num + new_ts_config.random_num + new_ts_config.unfuzzed_num;
     size_t real_select;
     std::ostringstream oss;
 
-    if (!empty_unfuzzed){
+    if (!unfuzzed_pps.pps.empty()){
         std::lock_guard<std::mutex> lock(unfuzzed_pps.mutex);
-        real_select = std::min(unfuzzed_pps.pps.size(), new_ts_config.unfuzzed_num + new_ts_config.random_num);
+        real_select = std::min(unfuzzed_pps.pps.size(), new_ts_config.unfuzzed_num);
         for (size_t i = 0; i < real_select; i++){
-            Patchpoints tmp_pps;
-            tmp_pps.push_back(unfuzzed_pps.pps[i]);
-            selected_pps.unfuzzed_pps.push_back(tmp_pps);
+            selected_pps.unfuzzed_pps.push_back(unfuzzed_pps.pps[i]);
             res--;
         }
-        if (!unfuzzed_pps.pps.empty()) unfuzzed_pps.pps.erase(unfuzzed_pps.pps.begin(), unfuzzed_pps.pps.begin() + real_select);
-        oss << "[*] Selected " << selected_pps.unfuzzed_pps.size() << "/" << new_ts_config.unfuzzed_num + new_ts_config.random_num << " unfuzzed pps\t";
+        unfuzzed_pps.pps.erase(unfuzzed_pps.pps.begin(), unfuzzed_pps.pps.begin() + real_select);
+        oss << "[*] Selected " << selected_pps.unfuzzed_pps.size() << "/" << new_ts_config.unfuzzed_num << " unfuzzed pps\t";
     }else{
         oss << "[*] Selected " << "0/0" << " unfuzzed pps\t";
     }
@@ -302,47 +308,34 @@ void generate_testcases(Patchpointslock &source_pps, Patchpointslock &unfuzzed_p
         std::lock_guard<std::mutex> lock(interest_pps.mutex);
         real_select = std::min(interest_pps.queue.size(), new_ts_config.interest_num);
         for (size_t i = 0; i < real_select; i++){
-            Patchpoints tmp_pps = interest_pps.queue.front();
-            selected_pps.interest_pps.push_back(tmp_pps);
+            Patchpoint tmp_pp = interest_pps.queue.front();
+            selected_pps.interest_pps.push_back(tmp_pp);
             interest_pps.queue.pop();
-            interest_pps.queue.push(tmp_pps);
+            interest_pps.queue.push(tmp_pp);
             res--;
         }
     }
     oss << selected_pps.interest_pps.size() << "/" << new_ts_config.interest_num << " interesting pps\t";
     
-    if (empty_unfuzzed){
-        std::random_device rd;
-        std::mt19937 gen(rd()); // Mersenne Twister engine
+    std::random_device rd;
+    std::mt19937 gen(rd()); // Mersenne Twister engine
+
+    {   
+        std::lock_guard<std::mutex> lock(source_pps.mutex);
         std::uniform_int_distribution<size_t> dist_idx(0, source_pps.pps.size() - 1);
-        std::uniform_int_distribution<size_t> dist_num(1, MAX_MUT_PPS);
-        size_t rand_num_pps = dist_num(gen);
-        size_t counter = 0;
-        Patchpoints tmp_pps;
-        // FIXME: duplication between pps and unfuzzed_pps?
-        real_select = std::min(source_pps.pps.size(), res * MAX_MUT_PPS);
-        assert(rand_num_pps >= real_select);
+        real_select = std::min(source_pps.pps.size(), res);
         for (size_t i = 0; i < real_select; i++){
-            counter++;
-            tmp_pps.push_back(source_pps.pps[dist_idx(gen)]);
-            if (counter == rand_num_pps || i == real_select - 1){
-                selected_pps.random_pps.push_back(tmp_pps);
-                tmp_pps.clear();
-                counter = 0;
-                rand_num_pps = dist_num(gen);
-            }
+            selected_pps.random_pps.push_back(source_pps.pps[dist_idx(gen)]);
         }
-        assert(counter == 0);
-        oss << selected_pps.random_pps.size() << "/" << new_ts_config.random_num << " random pps";
-    }else{
-        oss << "0/0" << " random pps";
     }
+
+    oss << selected_pps.random_pps.size() << "/" << new_ts_config.random_num << " random pps";
 
     output_log(oss.str(), log_path);
     //printf("%s\n", oss.str().c_str());
 }
 
-TestCase fuzz_one(int id, PintoolArgs& pintool_args ,Hash2pps &hash2pps, Patchpoints &pps, int level){
+TestCase fuzz_one(int id, PintoolArgs& pintool_args ,Hash2pp &hash2pp, Patchpoint &pp, int level){
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
@@ -358,8 +351,8 @@ TestCase fuzz_one(int id, PintoolArgs& pintool_args ,Hash2pps &hash2pps, Patchpo
     else if (level == 2) source_argv.push_back("/home/proj/proj/src/pintool/mutate_ins_multi3/obj-intel64/mutate_ins.so");
 
     for (const auto& arg : pintool_args){
-        source_argv.push_back(arg.first);
-        source_argv.push_back(arg.second);
+        source_argv.push_back(arg.first.c_str());
+        source_argv.push_back(arg.second.c_str());
     }
     // source_argv.push_back("-addr");
     // source_argv.push_back(addrs_str.c_str());
@@ -454,94 +447,95 @@ TestCase fuzz_one(int id, PintoolArgs& pintool_args ,Hash2pps &hash2pps, Patchpo
         //printf("new_filename: %s\n", testcase.filename);
         testcase.filename[sizeof(testcase.filename) - 1] = 0;
         // testcase.patch_point.addr = addr;
-        hash2pps[file_hash] = pps;
+        hash2pp[file_hash] = pp;
 
     }
     return testcase;
 
 }
 
-void mutations_1(mqd_t &mqd, int id, Patchpoints &pps, Hash2pps &hash2pps, int mut_type, size_t max_steps){
-    std::string addrs_str = "", muts_str = "",;
-    std::random_device rd;
-    std::mt19937 gen(rd()); // Mersenne Twister engine
-    std::uniform_int_distribution<uint8_t> dist_u8;
+void mutations_1(mqd_t &mqd, int id, Patchpoint &pp, Hash2pp &hash2pp, int mut_type, size_t max_steps){
     PintoolArgs pintool_args;
-    for (size_t i = 0; i < pps.size(); i ++){
-        addrs_str += (std::to_string(pps[i].addr) + ",");
-        if (mut_type == COMBINE) muts_str += (std::to_string(dist_u8(gen) % 6) + ",");
-        else muts_str += (std::to_string(mut_type) + ",");
-        
-    }
-    addrs_str.pop_back();
-    muts_str.pop_back();
-    pintool_args["-addr"] = addrs_str;
-    pintool_args["-mut"] = muts_str;
+    pintool_args["-addr"] = std::to_string(pp.addr);
+    pintool_args["-mut"] = std::to_string(mut_type);
 
     for (size_t i = 0; i < max_steps; i ++){
-        TestCase ts = fuzz_one(id, pintool_args, hash2pps, pps, 1);
+        TestCase ts = fuzz_one(id, pintool_args, hash2pp, pp, 1);
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
     }
     
 }
 
-void bit_flip(mqd_t &mqd, int id, PintoolArgs& pintool_args, Hash2pps& hash2pps, Masks *masks_ptr, Patchpoint& pp){
-    uint32_t num_iter_apply = std::min(addr2iter.map[pp.addr], MAX_ITERATION);
+void bit_flip(mqd_t &mqd, int id, PintoolArgs& pintool_args, Hash2pp& hash2pp, Masks *masks_ptr, Patchpoint& pp, Interestpp2masks &addr2masks){
+    uint64_t num_iter_apply = addr2iter.map[pp.addr];
     masks_ptr->num_iter = num_iter_apply;
     masks_ptr->addr = pp.addr;
     unsigned char* mask_ptr = masks_ptr->masks;
     size_t last_byte_idx = 0;
-    Patchpoints tmp_pps;
-    tmp_pps.push_back(pp);
-    for (size_t idx_flip = 0; idx_flip < num_iter_apply * pp.reg_size * 8; idx_flip++)
+    size_t num_mut_cap = std::min(num_iter_apply * pp.reg_size * 8, (uint64_t)MAX_NUM_ONE_MUT);
+    for (size_t idx_flip = 0; idx_flip < num_mut_cap; idx_flip++)
     {
         mask_ptr[last_byte_idx] = 0;
         last_byte_idx = idx_flip / 8;
         // flip bit
-        mask_ptr[idx_flip / 8] ^= 1 << (idx_flip % 8);
+        mask_ptr[idx_flip / 8] = 1 << (idx_flip % 8);
         masks_ptr->cur_iter = 0;
+        //printf("bit flip, idx: %ld\n", idx_flip);
 
         // mutate
-        TestCase ts = fuzz_one(id, pintool_args, hash2pps, tmp_pps, 2);
+        TestCase ts = fuzz_one(id, pintool_args, hash2pp, pp, 2);
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
-        
+        if (addr2masks.map.count(pp.addr) == 0) {
+            std::vector<Masks> msk_empty;
+            addr2masks.map[pp.addr] = msk_empty;
+        }
+        std::string fname = ts.filename;
+        if (fname != ""){
+            addr2masks.map[pp.addr].push_back(*masks_ptr);
+        }
     }
     
 }
 
-void byte_flip(mqd_t &mqd, int id, PintoolArgs& pintool_args, Hash2pps& hash2pps, Masks *masks_ptr, Patchpoint& pp){
-    uint32_t num_iter_apply = std::min(addr2iter.map[pp.addr], MAX_ITERATION);
+void byte_flip(mqd_t &mqd, int id, PintoolArgs& pintool_args, Hash2pp& hash2pp, Masks *masks_ptr, Patchpoint& pp, Interestpp2masks &addr2masks){
+    uint64_t num_iter_apply = addr2iter.map[pp.addr];
     masks_ptr->num_iter = num_iter_apply;
     masks_ptr->addr = pp.addr;
     unsigned char* mask_ptr = masks_ptr->masks;
     size_t last_byte_idx = 0;
-    Patchpoints tmp_pps;
-    tmp_pps.push_back(pp);
+    size_t num_mut_cap = std::min(num_iter_apply * pp.reg_size, (uint64_t)MAX_NUM_ONE_MUT);
 
-    for (size_t idx_flip = 0; idx_flip < num_iter_apply * pp.reg_size; idx_flip++)
+    for (size_t idx_flip = 0; idx_flip < num_mut_cap; idx_flip++)
     {
         mask_ptr[last_byte_idx] = 0;
         last_byte_idx = idx_flip;
         // flip byte
-        mask_ptr[idx_flip] ^= 0xff;
+        mask_ptr[idx_flip] = 0xff;
         masks_ptr->cur_iter = 0;
+        //printf("byte flip, idx: %ld\n", idx_flip);
 
         // mutate
-        TestCase ts = fuzz_one(id, pintool_args, hash2pps, tmp_pps, 2);
+        TestCase ts = fuzz_one(id, pintool_args, hash2pp, pp, 2);
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+        if (addr2masks.map.count(pp.addr) == 0) {
+            std::vector<Masks> msk_empty;
+            addr2masks.map[pp.addr] = msk_empty;
+        }
+        std::string fname = ts.filename;
+        if (fname != ""){
+            addr2masks.map[pp.addr].push_back(*masks_ptr);
+        }
         
     }
     
 }
 
-void random_byte(mqd_t &mqd, int id, PintoolArgs& pintool_args, Hash2pps& hash2pps, Masks *masks_ptr, Patchpoint& pp, int rand_type){
-    uint32_t num_iter_apply = std::min(addr2iter.map[pp.addr], MAX_ITERATION);
+void random_byte(mqd_t &mqd, int id, PintoolArgs& pintool_args, Hash2pp& hash2pp, Masks *masks_ptr, Patchpoint& pp, int rand_type, Interestpp2masks &addr2masks){
+    uint64_t num_iter_apply = addr2iter.map[pp.addr];
     masks_ptr->num_iter = num_iter_apply;
     masks_ptr->addr = pp.addr;
     unsigned char* mask_ptr = masks_ptr->masks;
     size_t last_byte_idx = 0;
-    Patchpoints tmp_pps;
-    tmp_pps.push_back(pp);
 
     size_t idx_rand = 0;
     std::random_device rd;
@@ -556,129 +550,209 @@ void random_byte(mqd_t &mqd, int id, PintoolArgs& pintool_args, Hash2pps& hash2p
         last_byte_idx = idx_rand;
         mask_ptr[idx_rand] = dist_u8(gen);
         masks_ptr->cur_iter = 0;
+        //printf("random byte, idx: %ld, val: %u\n", idx_rand, mask_ptr[idx_rand]);
 
         // mutate
-        TestCase ts = fuzz_one(id, pintool_args, hash2pps, tmp_pps, 2);
+        TestCase ts = fuzz_one(id, pintool_args, hash2pp, pp, 2);
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
-        
+        if (addr2masks.map.count(pp.addr) == 0) {
+            std::vector<Masks> msk_empty;
+            addr2masks.map[pp.addr] = msk_empty;
+        }
+        std::string fname = ts.filename;
+        if (fname != ""){
+            addr2masks.map[pp.addr].push_back(*masks_ptr);
+        }
+
     }
     
 }
 
-void u8add(mqd_t &mqd, int id, PintoolArgs& pintool_args, Hash2pps& hash2pps, Masks *masks_ptr, Patchpoint& pp){
-    uint32_t num_iter_apply = std::min(addr2iter.map[pp.addr], MAX_ITERATION);
+void u8add(mqd_t &mqd, int id, PintoolArgs& pintool_args, Hash2pp& hash2pp, Masks *masks_ptr, Patchpoint& pp, Interestpp2masks &addr2masks){
+    uint64_t num_iter_apply = addr2iter.map[pp.addr];
+    if (num_iter_apply * pp.reg_size > 4) return;
+    
     masks_ptr->num_iter = num_iter_apply;
     masks_ptr->addr = pp.addr;
     unsigned char* mask_ptr = masks_ptr->masks;
     size_t last_byte_idx = 0;
-    Patchpoints tmp_pps;
-    tmp_pps.push_back(pp);
-
     uint8_t adder = 0;
     
     for (size_t idx = 0; idx < num_iter_apply * pp.reg_size * 256; idx++)
     {   
         mask_ptr[last_byte_idx] = 0;
         last_byte_idx = idx / 256;
-        mask_ptr[last_byte_idx] ^= adder;
+        mask_ptr[last_byte_idx] = adder;
         adder++;
         if (adder % 256 == 0){
             adder = 0;
         }
         masks_ptr->cur_iter = 0;
+        //printf("u8 add, idx: %ld, val: %u\n", last_byte_idx, mask_ptr[last_byte_idx]);
 
         // mutate
-        TestCase ts = fuzz_one(id, pintool_args, hash2pps, tmp_pps, 2);
+        TestCase ts = fuzz_one(id, pintool_args, hash2pp, pp, 2);
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+        if (addr2masks.map.count(pp.addr) == 0) {
+            std::vector<Masks> msk_empty;
+            addr2masks.map[pp.addr] = msk_empty;
+        }
+        std::string fname = ts.filename;
+        if (fname != ""){
+            addr2masks.map[pp.addr].push_back(*masks_ptr);
+        }
     }
     
 }
 
-void mutations_2(mqd_t &mqd, int id, Patchpoints &pps, Hash2pps &hash2pps, int mut_type, size_t max_steps){
-    Masks *masks_ptr = (Masks *)shm_para.shm_base_ptr;
-    masks_ptr += id * MAX_MUT_PPS;
-    memset(masks_ptr, 0, MAX_MUT_PPS * sizeof(Masks));
-    Patchpoints valid_pps;
-    PintoolArgs pintool_args;
-    assert(pps.size() >= 1);
-    
-    for (size_t i = 0; i < pps.size(); i ++){
-        uint32_t num_iter;
-        if (addr2iter.map.count(pps[i].addr) == 0) num_iter = get_iter("/tmp", std::to_string(pps[i].addr));
-        else {
-            valid_pps.push_back(pps[i]);
-            continue;
+void combine(mqd_t &mqd, int id, PintoolArgs& pintool_args, Hash2pp& hash2pp, Masks *masks_ptr, Patchpoint& pp, Interestpp2masks &addr2masks){
+    size_t num_masks = addr2masks_global.map[pp.addr].size();
+    if (num_masks <= 1) return;
+    std::vector<Masks> &tmp_masks = addr2masks_global.map[pp.addr];
+    uint64_t num_iter_apply = addr2iter.map[pp.addr];
+    masks_ptr->num_iter = num_iter_apply;
+    masks_ptr->addr = pp.addr;
+    unsigned char* mask_ptr = masks_ptr->masks;
+    std::random_device rd;
+    std::mt19937 gen(rd()); // Mersenne Twister engine
+    std::uniform_int_distribution<size_t> dist_idx;
+    size_t base_idx = dist_idx(gen) % num_masks;
+
+    for (size_t idx = 0; idx < num_masks; idx++)
+    {   
+        if (idx == base_idx) continue;
+
+        // combine
+        for (size_t j = 0; j < num_iter_apply * pp.reg_size; j++)
+        {
+            mask_ptr[j] = tmp_masks[base_idx].masks[j] ^ tmp_masks[idx].masks[j];
         }
-        
+        printf("combine: base_idx: %ld, idx: %ld\n", base_idx, idx);
+        masks_ptr->cur_iter = 0;
+
+        // mutate
+        TestCase ts = fuzz_one(id, pintool_args, hash2pp, pp, 2);
+        mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+        if (addr2masks.map.count(pp.addr) == 0) {
+            std::vector<Masks> msk_empty;
+            addr2masks.map[pp.addr] = msk_empty;
+        }
+        std::string fname = ts.filename;
+        if (fname != ""){
+            addr2masks.map[pp.addr].push_back(*masks_ptr);
+        }
+    }
+    
+}
+
+void mutations_2(mqd_t &mqd, int id, Patchpoint &pp, Hash2pp &hash2pp, int mut_type, size_t max_steps, Interestpp2masks &addr2masks){
+    Masks *masks_ptr = (Masks *)shm_para.shm_base_ptr;
+    masks_ptr += id;
+    PintoolArgs pintool_args;
+    
+    uint64_t num_iter;
+    if (addr2iter.map.count(pp.addr) == 0) {
+        auto it = std::find_if(source_pps.pps.begin(), source_pps.pps.end(), [=](const Patchpoint& tmp_pp){return tmp_pp.addr == pp.addr;});
+        if (it == source_pps.pps.end()) return;
+
+        num_iter = get_iter(work_dir, std::to_string(pp.addr));
+        //printf("pp: %p, iter: %ld\n", (void *)pp.addr, num_iter);
         if (num_iter == 0) {
             std::lock_guard<std::mutex> lock(source_pps.mutex);
-            auto it = std::find_if(source_pps.pps.begin(), source_pps.pps.end(), [=](const Patchpoint& pp){return pp.addr == pps[i].addr;});
             source_pps.pps.erase(it);
-        }else{
-            std::lock_guard<std::mutex> lock(addr2iter.mutex);
-            addr2iter.map[pps[i].addr] = num_iter;
-            valid_pps.push_back(pps[i]);
+            return;
         }
+        std::lock_guard<std::mutex> lock(addr2iter.mutex);
+        if (addr2iter.map.count(pp.addr) == 0) addr2iter.map[pp.addr] = std::min(num_iter, (uint64_t)MAX_ITERATION);
     }
-    // all pps are invalid
-    if (valid_pps.empty()) return;
-    
+    num_iter = addr2iter.map[pp.addr];
     pintool_args["-offset"] = std::to_string(id);
-    pintool_args["-num"] = std::to_string(valid_pps.size());
     pintool_args["-num_t"] = std::to_string(NUM_THREAD);
-    if (pps.size() > 1) {
-        assert(mut_type == COMBINE);
-        // combine
-    }else{
-        
-        
-    }
-
-    std::string addrs_str = "", injectValues_str = "", muts_str = "", idxes_str = "";
-    addrs_str.pop_back();
-    muts_str.pop_back();
-    addrs_str += (std::to_string(pps[i].addr) + ",");
+    
     for (size_t i = 0; i < max_steps; i ++){
-        
+        memset(masks_ptr, 0, sizeof(Masks));
+        switch (mut_type)
+        {
+        case BIT_FLIP:
+            bit_flip(mqd, id, pintool_args, hash2pp, masks_ptr, pp, addr2masks);
+            break;
+        case BYTE_FLIP:
+            byte_flip(mqd, id, pintool_args, hash2pp, masks_ptr, pp, addr2masks);
+            break;
+        case RANDOM_BYTE0:
+            random_byte(mqd, id, pintool_args, hash2pp, masks_ptr, pp, RANDOM_BYTE0, addr2masks);
+            break;
+        case RANDOM_BYTE:
+            random_byte(mqd, id, pintool_args, hash2pp, masks_ptr, pp, RANDOM_BYTE, addr2masks);
+            break;
+        case U8ADD:
+            u8add(mqd, id, pintool_args, hash2pp, masks_ptr, pp, addr2masks);
+            break;
+        case COMBINE:
+            combine(mqd, id, pintool_args, hash2pp, masks_ptr, pp, addr2masks);
+            break;
+        default:
+            break;
+        }
     }
     
 }
 
-void fuzz_candidates_1(mqd_t &mqd, int id, Pps2fuzz &selected_pps, Hash2pps &hash2pps){
+void fuzz_candidates_1(mqd_t &mqd, int id, Pps2fuzz &selected_pps, Hash2pp &hash2pp){
     // unfuzzed patchpoints
     for (size_t i = 0; i < selected_pps.unfuzzed_pps.size(); i++){
-        mutations_1(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, BYTE_FLIP, 1);
-        mutations_1(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, BIT_FLIP, 1);
-        mutations_1(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, RANDOM_BYTE0, 1);
-        mutations_1(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, U8ADD, 1);
-        mutations_1(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, INJECT_VAL, 1);
-        mutations_1(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, RANDOM_BYTE, RANDOM_MAX_TRIES);
-        mutations_1(mqd, id, selected_pps.unfuzzed_pps[i], hash2pps, COMBINE, 1);
+        mutations_1(mqd, id, selected_pps.unfuzzed_pps[i], hash2pp, BYTE_FLIP, 1);
+        mutations_1(mqd, id, selected_pps.unfuzzed_pps[i], hash2pp, BIT_FLIP, 1);
+        mutations_1(mqd, id, selected_pps.unfuzzed_pps[i], hash2pp, U8ADD, 1);
     }
     //printf("%d: after unfuzzed\n", id);
     // interesting patchpoints
     for (size_t i = 0; i < selected_pps.interest_pps.size(); i++){
-        mutations_1(mqd, id, selected_pps.interest_pps[i], hash2pps, RANDOM_BYTE0, 1);
-        mutations_1(mqd, id, selected_pps.interest_pps[i], hash2pps, RANDOM_BYTE, RANDOM_MAX_TRIES);
-        mutations_1(mqd, id, selected_pps.interest_pps[i], hash2pps, COMBINE, 1);
+        mutations_1(mqd, id, selected_pps.interest_pps[i], hash2pp, RANDOM_BYTE0, 1);
+        mutations_1(mqd, id, selected_pps.interest_pps[i], hash2pp, RANDOM_BYTE, 1);
+        mutations_1(mqd, id, selected_pps.interest_pps[i], hash2pp, INJECT_VAL, 1);
+        mutations_1(mqd, id, selected_pps.interest_pps[i], hash2pp, COMBINE, 1);
     }
     //printf("%d: after interest\n", id);
     // random patchpoints
     for (size_t i = 0; i < selected_pps.random_pps.size(); i++){
-        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pps, BYTE_FLIP, 1);
-        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pps, BIT_FLIP, 1);
-        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pps, RANDOM_BYTE0, 1);
-        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pps, U8ADD, 1);
-        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pps, INJECT_VAL, 1);
-        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pps, RANDOM_BYTE, RANDOM_MAX_TRIES);
-        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pps, COMBINE, 1);
+        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pp, RANDOM_BYTE0, 1);
+        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pp, RANDOM_BYTE, 1);
+        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pp, INJECT_VAL, 1);
+        mutations_1(mqd, id, selected_pps.random_pps[i], hash2pp, COMBINE, 1);
         
     }
     //printf("%d: after random\n", id);
     
 }
 
-void save_interest_pps(Hash2pps &hash2pps, StringSet &afl_files, StringSet &afl_files_hashes){
+void fuzz_candidates_2(mqd_t &mqd, int id, Pps2fuzz &selected_pps, Hash2pp &hash2pp, Interestpp2masks &addr2masks){
+    // unfuzzed patchpoints
+    for (size_t i = 0; i < selected_pps.unfuzzed_pps.size(); i++){
+        //printf("mutate unfuzzed pps: %p\n", (void *)selected_pps.unfuzzed_pps[i].addr);
+        mutations_2(mqd, id, selected_pps.unfuzzed_pps[i], hash2pp, BYTE_FLIP, 1, addr2masks);
+        mutations_2(mqd, id, selected_pps.unfuzzed_pps[i], hash2pp, BIT_FLIP, 1, addr2masks);
+        mutations_2(mqd, id, selected_pps.unfuzzed_pps[i], hash2pp, U8ADD, 1, addr2masks);
+    }
+    //printf("%d: after unfuzzed\n", id);
+    // interesting patchpoints
+    for (size_t i = 0; i < selected_pps.interest_pps.size(); i++){
+        //printf("mutate interest pps: %p\n", (void *)selected_pps.interest_pps[i].addr);
+        mutations_2(mqd, id, selected_pps.interest_pps[i], hash2pp, RANDOM_BYTE0, 1, addr2masks);
+        mutations_2(mqd, id, selected_pps.interest_pps[i], hash2pp, RANDOM_BYTE, 1, addr2masks);
+        mutations_2(mqd, id, selected_pps.interest_pps[i], hash2pp, COMBINE, 1, addr2masks);
+    }
+    //printf("%d: after interest\n", id);
+    // random patchpoints
+    for (size_t i = 0; i < selected_pps.random_pps.size(); i++){
+        //printf("mutate random pps: %p\n", (void *)selected_pps.random_pps[i].addr);
+        mutations_2(mqd, id, selected_pps.random_pps[i], hash2pp, RANDOM_BYTE0, 1, addr2masks);
+        mutations_2(mqd, id, selected_pps.random_pps[i], hash2pp, RANDOM_BYTE, 1, addr2masks);
+    }
+
+}
+
+void save_interest_pps(Hash2pp &hash2pp, StringSet &afl_files, StringSet &afl_files_hashes, Interestpp2masks &addr2masks, int level){
     std::filesystem::path afl_output_dir = "/home/proj/proj/test/afl_test1/output/default/queue/";
     std::string orig_file = "orig";
     for (const auto& file : std::filesystem::directory_iterator(afl_output_dir)){
@@ -694,45 +768,46 @@ void save_interest_pps(Hash2pps &hash2pps, StringSet &afl_files, StringSet &afl_
         }
     }
     
-    int pps_cnt = 0;
     {
         std::lock_guard<std::mutex> lock(interest_pps.mutex);
-
-        for (const auto& pair : hash2pps){
+        for (const auto& pair : hash2pp){
             if (afl_files_hashes.find(pair.first) != afl_files_hashes.end()){
-                Patchpoints tmp_pps = pair.second;
-                std::string addrs_str  = "";
-                for (size_t i = 0; i < tmp_pps.size(); i++)
-                {  
-                    addrs_str += (std::to_string(tmp_pps[i].addr) + ",");
-                }
-                addrs_str.pop_back();
+                Patchpoint tmp_pp = pair.second;
                 //printf("find interesting pps: %s, %s\n", pair.first.c_str(), addrs_str.c_str());
                 std::ostringstream oss;
-                oss << "[*] Find interesting pps: " << pair.first.c_str() << ", " << addrs_str.c_str();
+                oss << "[*] Find interesting pp: " << pair.first.c_str() << ", " << std::to_string(tmp_pp.addr).c_str();
                 output_log(oss.str(), log_path);
                 //printf("%s\n", oss.str().c_str());
                 if (interest_pps.queue.size() > MAX_INTEREST_SIZE) interest_pps.queue.pop();
-                interest_pps.queue.push(tmp_pps);
+                interest_pps.queue.push(tmp_pp);
 
+                if (level == 2){
+                    std::lock_guard<std::mutex> lock(addr2masks_global.mutex);
+                    if (addr2masks_global.map.count(tmp_pp.addr) == 0) {
+                        std::vector<Masks> msk_empty;
+                        addr2masks_global.map[tmp_pp.addr] = msk_empty;
+                    }
+                    if (addr2masks.map[tmp_pp.addr].size() > 0){
+                        for (const auto &mask : addr2masks.map[tmp_pp.addr]){
+                            addr2masks_global.map[tmp_pp.addr].push_back(mask);
+                        }
+                        addr2masks.map[tmp_pp.addr].clear();
+                    }
+                }
             }
         }
     }
 
-    hash2pps.clear();
-    // std::ostringstream oss;
-    // oss << "[*] Saved " << pps_cnt <<" interesting pps; " << "current interesting pps: " << interest_pps.queue.size();
-    // output_log(oss.str(), log_path);
-
+    hash2pp.clear();
 }
 
 
 void *thread_worker(void* arg){
     ThreadArg *targ = (ThreadArg *)arg;
     std::string &out_dir = out_dirs[targ->tid];
-    out_dir = "/tmp/ftm_workerDir_" + std::to_string(targ->tid);
+    out_dir = work_dir + "/ftm_workerDir_" + std::to_string(targ->tid);
     if (!std::filesystem::exists(out_dir)){
-        if (!std::filesystem::create_directory(out_dir)) {
+        if (!std::filesystem::create_directories(out_dir)) {
             printf("failed to create directory in process %d\n", targ->tid);
             return nullptr;
         }
@@ -750,9 +825,10 @@ void *thread_worker(void* arg){
     // std::shuffle(unfuzzed_pps.begin(), unfuzzed_pps.end(), gen);
 
     Pps2fuzz pps2fuzz;
-    Hash2pps hash2pps;
+    Hash2pp hash2pp;
     StringSet afl_files;
     StringSet afl_files_hashes;
+    Interestpp2masks addr2masks;
     
     mqd_t mqd = mq_open (MQNAME, O_CREAT | O_RDWR,  0600, &my_mqattr);
     if (mqd == -1){
@@ -764,18 +840,15 @@ void *thread_worker(void* arg){
     while(1){
         generate_testcases(source_pps, source_unfuzzed_pps, pps2fuzz);
         //printf("%d: after generate testcases\n", targ->tid);
-        fuzz_candidates_1(mqd, targ->tid, pps2fuzz, hash2pps);
+        //fuzz_candidates_1(mqd, targ->tid, pps2fuzz, hash2pp);
+        fuzz_candidates_2(mqd, targ->tid, pps2fuzz, hash2pp, addr2masks);
         //printf("%d: after fuzz candidates\n", targ->tid);
-        save_interest_pps(hash2pps, afl_files, afl_files_hashes);
+        save_interest_pps(hash2pp, afl_files, afl_files_hashes, addr2masks, 2);
         //printf("%d: after save\n", targ->tid);
         
     }
     printf("oops! seems reached outside of the loop\n");
     mq_close(mqd);
-    //mq_unlink(MQNAME);
-    if (out_dir != ""){
-        if(!std::filesystem::remove_all(out_dir)) printf("failed to delete dir '%s'\n", out_dir.c_str());
-    }
     return nullptr;
 }
 
@@ -807,13 +880,13 @@ void worker_sig_handler(int sig){
 }
 
 void child_process(){
-    std::string out_dir = "/tmp";
+    std::string out_dir = work_dir;
     if (!find_patchpoints(out_dir, source_pps)) {
         perror("find_patchpoints() failed!\n");
         return;
     }
     // return;
-    source_unfuzzed_pps = source_pps;
+    source_unfuzzed_pps.pps = source_pps.pps;
     // std::random_device rd;
     // std::mt19937 gen(rd());
     // std::shuffle(unfuzzed_pps.begin(), unfuzzed_pps.end(), gen);
@@ -853,16 +926,16 @@ bool init(){
     auto duration = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
     std::string timestamp = std::to_string(millis);
-    log_path = "/tmp/ftm_log/log_" + timestamp;
-    std::string log_dir = "/tmp/ftm_log";
+    std::string log_dir = work_dir + "/ftm_log";
+    log_path = log_dir + "/log_" + timestamp;
     if (!std::filesystem::exists(log_dir)){
-        if (!std::filesystem::create_directory(log_dir)) {
+        if (!std::filesystem::create_directories(log_dir)) {
             printf("failed to create directory: %s\n", log_dir.c_str());
             return false;
         }
     }
 
-    shm_para.size_in_bytes = NUM_THREAD * MAX_MUT_PPS * sizeof(Masks);
+    shm_para.size_in_bytes = NUM_THREAD * sizeof(Masks);
     shm_para.key = ftok(SHM_NAME, 'A');
     shm_para.shm_id = shmget(shm_para.key, shm_para.size_in_bytes, IPC_CREAT | IPC_EXCL | 0666);
     if (shm_para.shm_id == -1){
@@ -898,6 +971,14 @@ bool init(){
     printf("shared memory created successfully! Size: %ld Bytes\n", shm_para.size_in_bytes);
 
     return true;
+}
+
+void clean_workdir(){
+    for (int i = 0; i < NUM_THREAD; i++){
+        if (std::filesystem::exists(out_dirs[i])){
+            if(!std::filesystem::remove_all(out_dirs[i])) printf("failed to delete dir '%s'\n", out_dirs[i].c_str());
+        }
+    }
 }
 
 int main(){
@@ -947,6 +1028,7 @@ int main(){
         // dup2(null_fd, STDOUT_FILENO);
         // dup2(null_fd, STDERR_FILENO);
         // close(null_fd);
+
         execve(afl_argv[0], const_cast<char* const*>(afl_argv.data()), const_cast<char* const*>(afl_envp.data()));
         perror("execve failed!\n");
     }
@@ -956,9 +1038,11 @@ int main(){
     if (WIFEXITED(status)) printf("worker process with PID %ld exited with status 0x%x.\n", (long)worker_pid, WEXITSTATUS(status));
     else if (WIFSIGNALED(status)) printf("worker process with PID %ld has been terminated by signal %d .\n", (long)worker_pid, WTERMSIG(status));
 
-    waitpid(afl_pid, &status, 0);
-    if (WIFEXITED(status)) printf("worker process with PID %ld exited with status 0x%x.\n", (long)afl_pid, WEXITSTATUS(status));
-    else printf("afl not exited?!\n");
+    // waitpid(afl_pid, &status, 0);
+    // if (WIFEXITED(status)) printf("worker process with PID %ld exited with status 0x%x.\n", (long)afl_pid, WEXITSTATUS(status));
+    // else printf("afl not exited?!\n");
+    kill(afl_pid, SIGKILL);
+    clean_workdir();
     return 0;
 
 }

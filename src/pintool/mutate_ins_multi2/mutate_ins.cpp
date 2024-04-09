@@ -21,7 +21,8 @@ enum MUTATION_TYPE{
     RANDOM_BYTE,
     RANDOM_BYTE0,
     U8ADD,
-    INJECT_VAL
+    INJECT_VAL,
+    COMBINE
 };
 #define RANDOM_MAX_STEPS 1024
 typedef struct patch_point{
@@ -39,6 +40,7 @@ std::random_device rd;
 std::mt19937 gen(rd()); // Mersenne Twister engine
 std::uniform_int_distribution<UINT8> dist_byte;
 std::uniform_int_distribution<UINT8> dist_idx;
+std::uniform_int_distribution<UINT8> dist_mut(0, 4);
 static int interest_val[] = {0, 1, 2};
 
 KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify addrs of instructions");
@@ -132,6 +134,34 @@ VOID InjectVal(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
     return;
 }
 
+VOID Combine(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 cur_pps, CONTEXT *ctx){
+    // use flip_idxes[cur_pps] as the number of current steps
+    if (flip_idxes[cur_pps] >= RANDOM_MAX_STEPS) return;
+    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    PIN_GetContextRegval(ctx, reg, reg_val);
+    //printf("combine: instruction@0x%lx, register %s, original value=%ld, cur_pps: %d ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val, cur_pps);
+    // randomly select a mutation
+    UINT8 mut = dist_mut(gen);
+    if (mut == 0){
+        reg_val[dist_idx(gen) % reg_size] ^= 0xff;
+    }else if (mut == 1){
+        UINT8 rand_idx = dist_idx(gen) % (reg_size * 8);
+        reg_val[rand_idx / 8] ^= 1 << (rand_idx % 8);
+    }else if (mut == 2){
+        reg_val[dist_idx(gen) % reg_size] = dist_byte(gen);
+    }else if (mut == 3){
+        reg_val[0] = dist_byte(gen);
+    }else if (mut == 4){
+        reg_val[0] = interest_val[dist_byte(gen) % 3];
+        for (size_t i = 1; i < reg_size; i++) reg_val[i] = 0;
+    }
+    flip_idxes[cur_pps]++;
+    //printf("mut: %d, mutated value of register is %ld\n", mut, *(ADDRINT*)reg_val);
+    PIN_SetContextRegval(ctx, reg, reg_val);
+    free(reg_val);
+    return;
+}
+
 VOID InstrumentIns(INS ins, ADDRINT baseAddr)
 {
     //xed_iclass_enum_t ins_opcode = (xed_iclass_enum_t)INS_Opcode(ins);
@@ -218,6 +248,15 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
             break;
         case RANDOM_BYTE0:
             INS_InsertCall(ins, ipoint, (AFUNPTR)RandomByte0,
+                        IARG_INST_PTR,// application IP
+                        IARG_UINT32, reg2mut,
+                        IARG_UINT32, reg_size,
+                        IARG_UINT32, current_pps,
+                        IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
+                        IARG_END);
+            break;
+        case COMBINE:
+            INS_InsertCall(ins, ipoint, (AFUNPTR)Combine,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
                         IARG_UINT32, reg_size,

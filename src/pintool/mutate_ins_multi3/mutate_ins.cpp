@@ -16,14 +16,12 @@ using std::endl;
 using std::flush;
 using std::hex;
 
-#define MAX_MUT_PPS 5
 #define SHM_NAME "/FTMM_SHM"
-#define MAX_MASKS_SIZE 1024 * 16
+#define MAX_REG_SIZE 16
+#define MAX_ITERATION 1024
 typedef struct patch_point{
     ADDRINT addr;
-    size_t shm_offset;
 } Patchpoint;
-typedef std::vector<Patchpoint> Patchpoints;
 typedef struct shm_para{
     key_t key;
     int shm_id;
@@ -32,27 +30,24 @@ typedef struct shm_para{
     size_t size_in_bytes;
 }Shm_para;
 typedef struct masks{
-    uint32_t num_iter;
+    uint64_t num_iter;
     uint64_t addr;
     uint64_t cur_iter;
-    unsigned char masks[MAX_MASKS_SIZE];
+    unsigned char masks[(MAX_ITERATION + 1) * MAX_REG_SIZE];
 }Masks;
 
 std::set<std::string> lib_blacklist;
-Patchpoints patch_points;
+Patchpoint pp;
 Shm_para shm_para;
 BOOL detach_flag;
 KNOB<std::string> KnobNewOff(KNOB_MODE_WRITEONCE, "pintool", "offset", "0", "specify addrs of instructions");
-KNOB<std::string> KnobNewNum(KNOB_MODE_WRITEONCE, "pintool", "num", "512", "specify how many pps will be mutated");
 KNOB<std::string> KnobNewNumThread(KNOB_MODE_WRITEONCE, "pintool", "num_t", "512", "specify how many pps will be mutated");
 
-VOID ApplyMutation(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 offset, ADDRINT addr, CONTEXT *ctx){
+VOID ApplyMutation(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
     // use flip_idxes[cur_pps] as the number of current steps
     if (reg_size == 0) return;
     Masks *masks = (Masks *)shm_para.shm_base_ptr;
-    masks += offset;
-    if (masks->cur_iter > masks->num_iter) return;
-    assert(addr == masks->addr);
+    if (masks->cur_iter >= masks->num_iter) return;
 
     UINT8 *reg_val = (UINT8 *)malloc(reg_size);
     PIN_GetContextRegval(ctx, reg, reg_val);
@@ -65,6 +60,7 @@ VOID ApplyMutation(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 offset, ADDRINT 
     //printf("mutated value=%ld\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
     free(reg_val);
+    if (masks->cur_iter == masks->num_iter) PIN_Detach();
     return;
 }
 
@@ -73,11 +69,8 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
     //xed_iclass_enum_t ins_opcode = (xed_iclass_enum_t)INS_Opcode(ins);
     //printf("instruction@%p: %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
     ADDRINT addr_offset = (INS_Address(ins) - baseAddr);
-    auto it = std::find_if(patch_points.begin(), patch_points.end(), [=](const Patchpoint& pp){return pp.addr == addr_offset;});
-    if (it == patch_points.end()) return;
-    Patchpoint pp = *it;
-    patch_points.erase(it);
-    if (patch_points.empty()) detach_flag = true;
+    if (pp.addr != addr_offset) return;
+    detach_flag = true;
 
     //AFUNPTR mut_func = NULL;
     IPOINT ipoint;
@@ -111,8 +104,6 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
                 IARG_INST_PTR,// application IP
                 IARG_UINT32, reg2mut,
                 IARG_UINT32, reg_size,
-                IARG_UINT32, pp.shm_offset,
-                IARG_ADDRINT, pp.addr,
                 IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                 IARG_END);
          
@@ -151,7 +142,10 @@ VOID InstrumentTrace(TRACE trace, VOID *v){
     }
 }
 
-void Detatched(VOID *v){std::cerr << endl << "Detached from pintool!" << endl;}
+void Detatched(VOID *v){
+    std::cerr << endl << "Detached from pintool!" << endl;
+    shmdt(shm_para.shm_base_ptr_old);    
+}
 
 void Fini(INT32 code, void *v){
 	// printf("read counts: %ld\n", read_count);
@@ -170,28 +164,12 @@ INT32 Usage()
     return -1;
 }
 
-std::vector<std::string> get_tokens(std::string args, std::string del){
-    size_t pos_s = 0;
-    size_t pos_e;
-    std::string token;
-    std::vector<std::string> vec;
-    while((pos_e = args.find(del, pos_s)) != std::string::npos){
-        token = args.substr(pos_s, pos_e - pos_s);
-        pos_s = pos_e + del.length();
-        vec.push_back(token);
-    }
-    vec.push_back(args.substr(pos_s));
-    return vec;
-}
-
 BOOL Init(){
     size_t offset = std::stoul(KnobNewOff.Value());
-    size_t pps_num = std::stoul(KnobNewNum.Value());
     size_t num_thread = std::stoul(KnobNewNumThread.Value());
-    ASSERT(pps_num <= MAX_MUT_PPS, "number of pps invalid!");
     // ASSERT(offset < NUM_THREAD);
 
-    shm_para.size_in_bytes = num_thread * MAX_MUT_PPS * sizeof(Masks);
+    shm_para.size_in_bytes = num_thread * sizeof(Masks);
     shm_para.key = ftok(SHM_NAME, 'A');
     shm_para.shm_id = shmget(shm_para.key, shm_para.size_in_bytes, 0666);
     if (shm_para.shm_id == -1){
@@ -203,24 +181,16 @@ BOOL Init(){
         std::cerr << "shmat() failed!\n";
         return false;
     }
-    shm_para.shm_base_ptr = shm_para.shm_base_ptr_old + (offset * MAX_MUT_PPS * sizeof(Masks));
-    //printf("shared memory opened successfully! Size: %ld Bytes\n", shm_para.size_in_bytes);
+    shm_para.shm_base_ptr = shm_para.shm_base_ptr_old + (offset * sizeof(Masks));
+    printf("shared memory opened successfully! Size: %ld Bytes\n", shm_para.size_in_bytes);
 
     lib_blacklist.insert("ld-linux-x86-64.so.2");
     lib_blacklist.insert("[vdso]");
     lib_blacklist.insert("libc.so.6");
 
     Masks *msk_ptr_base = (Masks *)shm_para.shm_base_ptr;
-    for (size_t i = 0; i < pps_num; i++)
-    {
-        Masks *msk_ptr = msk_ptr_base + i;
-        Patchpoint pp;
-        pp.shm_offset = i;
-        pp.addr = msk_ptr->addr;
-        patch_points.push_back(pp);
-        //printf("pp: %p\n", (void *)pp.addr);
-    }
-    
+    pp.addr = msk_ptr_base->addr;
+    printf("pp: %p\n", (void *)pp.addr);
 
     return true;
 }

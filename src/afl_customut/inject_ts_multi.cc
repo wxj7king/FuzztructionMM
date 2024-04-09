@@ -24,7 +24,6 @@
 
 typedef struct patch_point{
     uint64_t addr;
-    uint64_t injectValue;
     uint8_t reg_size;
 } Patchpoint;
 typedef struct test_case{
@@ -126,7 +125,7 @@ size_t afl_custom_post_process(my_mutator_t *data, unsigned char *in_buf, size_t
         (*out_buf)[MAX_FILE_SIZE - 1] = '\0';
 
         data->last_mut.addr = ts_ptr->patch_point.addr;
-        data->last_mut.injectValue = ts_ptr->patch_point.injectValue;
+        data->last_mut.reg_size = ts_ptr->patch_point.reg_size;
         //printf("Addr: %ld, Value: %ld\n", ts_ptr->patch_point.addr, ts_ptr->patch_point.injectValue);
         //printf("Content: \n%s\n", (buf.str()).c_str());
         std::filesystem::remove(filename);
@@ -142,7 +141,7 @@ size_t afl_custom_post_process(my_mutator_t *data, unsigned char *in_buf, size_t
 
 const char *afl_custom_describe(my_mutator_t *data, size_t max_description_len){
     if (data->success){
-        std::string des = "mymut_" + std::to_string(data->last_mut.addr) + "_" + std::to_string(data->last_mut.injectValue);
+        std::string des = "mymut_" + std::to_string(data->last_mut.addr);
         return des.c_str();
     }else{
         return nullptr;
