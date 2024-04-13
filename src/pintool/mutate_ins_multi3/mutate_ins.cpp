@@ -40,28 +40,24 @@ std::set<std::string> lib_blacklist;
 Patchpoint pp;
 Shm_para shm_para;
 BOOL detach_flag;
+UINT8 *reg_val = NULL;
+Masks *masks_ptr = NULL;
 KNOB<std::string> KnobNewOff(KNOB_MODE_WRITEONCE, "pintool", "offset", "0", "specify addrs of instructions");
 KNOB<std::string> KnobNewNumThread(KNOB_MODE_WRITEONCE, "pintool", "num_t", "512", "specify how many pps will be mutated");
 
-VOID ApplyMutation(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
+//VOID ApplyMutation(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
+VOID ApplyMutation(REG reg, UINT32 reg_size, CONTEXT *ctx){
     // use flip_idxes[cur_pps] as the number of current steps
-    if (reg_size == 0) return;
-    Masks *masks = (Masks *)shm_para.shm_base_ptr;
-    if (masks->cur_iter >= masks->num_iter) return;
-
-    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("instruction@0x%lx, register %s, original value=%ld ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
     // apply mask
     for (size_t i = 0; i < reg_size; i++){
-        reg_val[i] ^= masks->masks[masks->cur_iter * reg_size + i];
+        reg_val[i] ^= masks_ptr->masks[masks_ptr->cur_iter * reg_size + i];
     }
-    masks->cur_iter++;
+    masks_ptr->cur_iter++;
     //printf("mutated value=%ld\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
-    free(reg_val);
-    if (masks->cur_iter == masks->num_iter) PIN_Detach();
-    return;
+    if (masks_ptr->cur_iter == masks_ptr->num_iter) PIN_Detach();
 }
 
 VOID InstrumentIns(INS ins, ADDRINT baseAddr)
@@ -97,11 +93,11 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
     REGSET_Insert(regsetOut, reg2mut);
     REGSET_Insert(regsetOut, REG_FullRegName(reg2mut));
     reg_size = REG_Size(reg2mut);
-
-    printf("instruction@%p, %s, end flag=%d, ipoint=%d\n", (void *)pp.addr, INS_Disassemble(ins).c_str(), detach_flag, ipoint);
+    reg_val = (UINT8 *)calloc(1, reg_size);
+    //printf("instruction@%p, %s, end flag=%d, ipoint=%d\n", (void *)pp.addr, INS_Disassemble(ins).c_str(), detach_flag, ipoint);
 
     INS_InsertCall(ins, ipoint, (AFUNPTR)ApplyMutation,
-                IARG_INST_PTR,// application IP
+                //IARG_INST_PTR,// application IP
                 IARG_UINT32, reg2mut,
                 IARG_UINT32, reg_size,
                 IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
@@ -143,7 +139,8 @@ VOID InstrumentTrace(TRACE trace, VOID *v){
 }
 
 void Detatched(VOID *v){
-    std::cerr << endl << "Detached from pintool!" << endl;
+    //std::cerr << endl << "Detached from pintool!" << endl;
+    free(reg_val);
     shmdt(shm_para.shm_base_ptr_old);    
 }
 
@@ -151,8 +148,8 @@ void Fini(INT32 code, void *v){
 	// printf("read counts: %ld\n", read_count);
     // printf("write counts: %ld\n", write_count);
 	// printf("read number of insts: %ld\n", instmap.size());
+    free(reg_val);
     shmdt(shm_para.shm_base_ptr_old);
-
     return;
 }
 
@@ -188,9 +185,10 @@ BOOL Init(){
     lib_blacklist.insert("[vdso]");
     lib_blacklist.insert("libc.so.6");
 
-    Masks *msk_ptr_base = (Masks *)shm_para.shm_base_ptr;
-    pp.addr = msk_ptr_base->addr;
-    printf("pp: %p\n", (void *)pp.addr);
+    pp.addr = ((Masks *)shm_para.shm_base_ptr)->addr;
+    //printf("pp: %p\n", (void *)pp.addr);
+
+    masks_ptr = (Masks *)shm_para.shm_base_ptr;
 
     return true;
 }

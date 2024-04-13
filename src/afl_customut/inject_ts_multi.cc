@@ -28,6 +28,7 @@ typedef struct patch_point{
 } Patchpoint;
 typedef struct test_case{
     char filename[255];
+    char filehash[65];
     Patchpoint patch_point;
 }TestCase;
 
