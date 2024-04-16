@@ -21,7 +21,7 @@ KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "spec
 static UINT64 addr = 0;
 static int flag = 0;
 
-VOID PIN_FAST_ANALYSIS_CALL Ins_counter(ADDRINT offset){
+inline VOID PIN_FAST_ANALYSIS_CALL Ins_counter(ADDRINT offset){
     count++;
 }
 

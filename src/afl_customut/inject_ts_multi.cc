@@ -45,7 +45,7 @@ typedef struct my_mutator {
 
 } my_mutator_t;
 #define MAX_FILE_SIZE 4096
-#define MQNAME "/TEST_MQ"
+#define MQNAME "/FTMM_MQ"
 
 namespace fs = std::filesystem;
 
