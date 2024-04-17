@@ -2,41 +2,87 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <mqueue.h>
-#include <string.h>
-#include <assert.h>
-#include <sys/wait.h>
-#include <sys/resource.h>
-
 #include <string>
-#include <memory>
 #include <filesystem>
 #include <chrono>
 #include <sstream>
 #include <fstream>
 #include <random>
 #include <iostream>
-#include <algorithm>
-
-#include <condition_variable>
-#include <openssl/evp.h>
-#include <openssl/sha.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/wait.h>
 
-//#include "utils.h"
 #include "include/utils.h"
 #include "include/worker.h"
 
 // global variables
 static pid_t afl_pid;
 static pid_t worker_pid;
-static pthread_t threads[NUM_THREAD];
-static ThreadArg targs[NUM_THREAD];
+static std::vector<pthread_t> threads;
+static std::vector<ThreadArg> targs;
 static Shm_para shm_para;
-static std::string ftmm_dir = "/tmp/ftmm_workdir";
+static const std::string ftmm_dir = "/tmp/ftmm_workdir";
+static const std::string log_dir = "/tmp/ftmm_workdir/ftm_log";
 static std::set<std::string> delete_white_list;
-static int mut_level;
 
+/// configurable parameters
+static int mut_level = 2;
+static size_t MAX_RANDOM_STEPS = 32;
+static size_t MAX_NUM_ONE_MUT = 1024;
+static size_t NUM_THREAD = 1;
+static size_t SOURCE_TIMEOUT = 3;
+/// run forever if it is zero
+static size_t fuzzer_timeout = 0;
+
+
+void main_sig_handler(int sig){
+    kill(afl_pid, SIGKILL);
+    waitpid(afl_pid, 0, 0);
+
+    kill(worker_pid, SIGINT);
+    waitpid(worker_pid, 0, 0);
+
+    exit(0);
+}
+
+void worker_sig_handler(int sig){
+    // kill potential child processes forked by worker threads
+    for (const auto& pid : Worker::source_pids){
+        if (pid != -1){
+            //printf("child process %d exist, kill it\n", pid);
+            kill(pid, SIGKILL);
+            waitpid(pid, 0, 0);
+        }
+    }
+    // detach from worker threads
+    for (const auto& tid : threads){
+        //printf("detach from thread %d\n", tid);
+        pthread_detach(tid);
+    }
+
+    _exit(0);
+}
+
+static void at_exit(){
+    // purge work dir
+    for (const auto& entry : std::filesystem::directory_iterator(ftmm_dir))
+    {   
+        if (delete_white_list.count(entry.path().filename().string()) == 0){
+            if (std::filesystem::is_regular_file(entry)){
+                std::filesystem::remove(entry);
+            }else if(std::filesystem::is_directory(entry)){
+                std::filesystem::remove_all(entry);
+            }
+        }
+    }
+
+    // destroy shared memory and shared queue
+    shmctl(shm_para.shm_id, IPC_RMID, NULL);
+    mq_unlink(MQNAME);
+    printf("\nFuzztruction--: Have a nice day!\n");
+
+}
 
 static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points){
     std::string source_out = out_dir + "/tmp_source";
@@ -88,60 +134,11 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
     return true;
 }
 
-
 void *thread_worker(void* arg){
     ThreadArg *targ = (ThreadArg *)arg;
     Worker worker(targ->tid, mut_level);
     worker.start();
     return nullptr;
-}
-
-void main_signal_handler(int sig){
-    kill(afl_pid, SIGKILL);
-    waitpid(afl_pid, 0, 0);
-
-    kill(worker_pid, SIGINT);
-    waitpid(worker_pid, 0, 0);
-
-    exit(0);
-}
-
-void worker_sig_handler(int sig){
-    // kill potential child processes forked by worker threads
-    for (const auto& pid : Worker::source_pids){
-        if (pid != -1){
-            //printf("child process %d exist, kill it\n", pid);
-            kill(pid, SIGKILL);
-            waitpid(pid, 0, 0);
-        }
-    }
-    // detach from worker threads
-    for (const auto& tid : threads){
-        //printf("detach from thread %d\n", tid);
-        pthread_detach(tid);
-    }
-
-    _exit(0);
-}
-
-static void at_exit(){
-    // purge work dir
-    for (const auto& entry : std::filesystem::directory_iterator(ftmm_dir))
-    {   
-        if (delete_white_list.count(entry.path().filename().string()) == 0){
-            if (std::filesystem::is_regular_file(entry)){
-                std::filesystem::remove(entry);
-            }else if(std::filesystem::is_directory(entry)){
-                std::filesystem::remove_all(entry);
-            }
-        }
-    }
-
-    // destroy shared memory and shared queue
-    shmctl(shm_para.shm_id, IPC_RMID, NULL);
-    mq_unlink(MQNAME);
-    printf("\nFuzztruction--: Have a nice day!\n");
-
 }
 
 static void child_process(){
@@ -152,12 +149,12 @@ static void child_process(){
     }
     // return;
     Worker::source_unfuzzed_pps.pps = Worker::source_pps.pps;
-    Worker::ftmm_dir = ftmm_dir;
+    
     // std::random_device rd;
     // std::mt19937 gen(rd());
     // std::shuffle(unfuzzed_pps.begin(), unfuzzed_pps.end(), gen);
 
-    for (int i = 0; i < NUM_THREAD; i++){
+    for (size_t i = 0; i < NUM_THREAD; i++){
         targs[i].tid = i;
         int rc = pthread_create(&threads[i], NULL, thread_worker, (void *)&targs[i]);
         if (rc) {
@@ -167,7 +164,7 @@ static void child_process(){
     }
 
     // wait for all workers even though they will not return
-    for (int i = 0; i < NUM_THREAD; i++){
+    for (size_t i = 0; i < NUM_THREAD; i++){
         int rc = pthread_join(threads[i], NULL);
         if (rc) {
             perror("pthread_join()");
@@ -178,11 +175,20 @@ static void child_process(){
 }
 
 static bool init(){
+    threads.resize((size_t)NUM_THREAD);
+    targs.resize((size_t)NUM_THREAD);
+
+    Worker::MAX_RANDOM_STEPS = MAX_RANDOM_STEPS;
+    Worker::MAX_NUM_ONE_MUT = MAX_NUM_ONE_MUT;
+    Worker::NUM_THREAD = NUM_THREAD;
+    Worker::SOURCE_TIMEOUT = SOURCE_TIMEOUT;
+
+    Worker::source_pids.assign(NUM_THREAD, -1);
+    Worker::ftmm_dir = ftmm_dir;
     Worker::my_mqattr.mq_flags = 0;
     Worker::my_mqattr.mq_maxmsg = 10;
     Worker::my_mqattr.mq_msgsize = sizeof(TestCase);
     Worker::my_mqattr.mq_curmsgs = 0;
-
     Worker::new_selection_config.interest_num = 10;
     Worker::new_selection_config.unfuzzed_num = 20;
     Worker::new_selection_config.random_num = 10;
@@ -191,16 +197,18 @@ static bool init(){
     auto duration = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
     std::string timestamp = std::to_string(millis);
-    std::string log_dir = ftmm_dir + "/ftm_log";
     Worker::log_path = log_dir + "/log_" + timestamp;
+
     if (!std::filesystem::exists(log_dir)){
         if (!std::filesystem::create_directories(log_dir)) {
             printf("failed to create directory: %s\n", log_dir.c_str());
             return false;
         }
     }
+    // do not delete log dir
     delete_white_list.insert("ftm_log");
 
+    // initialize shared memory
     shm_para.size_in_bytes = NUM_THREAD * sizeof(Masks);
     shm_para.key = ftok(SHM_NAME, 'A');
     shm_para.shm_id = shmget(shm_para.key, shm_para.size_in_bytes, IPC_CREAT | IPC_EXCL | 0666);
@@ -259,8 +267,135 @@ static void reap_resources(){
 
 }
 
-int main(){
+static bool load_config(){
+    return true;
+}
+
+static void usage(){
+    const char* table = 
+        "fuzzer [options]"
+        "\nNote: \'-f\' option is mandatory!"
+        "\n  -f config_file    config file of parameters of source and sink binary"
+        "\n  -r num            maxmium steps for random mutation (default: 32)"
+        "\n  -n num_thread     number of threads (default: 1)"
+        "\n  -T seconds        fuzzer terminates after this time period (default: forever)"
+        "\n  -t seconds        timeout for each run of mutated source binary (default: 3s)"
+        "\n  -m num            maximum number of test cases one mutation can produce (default: 1024)"
+        "\n  -l mut_level      mutation level, 1 or 2, more fine-grained more higher (default: 2)"
+        "\n  -h help           show help\n"
+        ;
+    fprintf(stderr, "Fuzztrunction-- v0.1\n%s\n", table);
+    exit(1);
+}
+
+static void print_params(){
+    const char* params = 
+        "Run options: "
+        "\n  -f %s"
+        "\n  -r %ld"
+        "\n  -n %ld"
+        "\n  -T %ld"
+        "\n  -t %ld"
+        "\n  -m %ld"
+        "\n  -l %d\n"
+        ;
     
+    printf(params, "[building...]", MAX_RANDOM_STEPS, NUM_THREAD, fuzzer_timeout, SOURCE_TIMEOUT, MAX_NUM_ONE_MUT, mut_level);
+}
+
+
+int main(int argc, char **argv){
+    int show_help = 0, opt;
+    int loaded = 0;
+    opterr = 0;
+
+    while ((opt = getopt(argc, argv, "h:fr:n:T:t:m:l:")) > 0)
+    {
+        switch (opt)
+        {
+            case 'h':
+                show_help = 1;
+                break;
+
+            case 'f':
+                if (!load_config()) {
+                    show_help = 1;
+                }
+                loaded = 1;
+                break;
+                
+            /// TODO: set cap to those parameters
+            case 'r':
+                MAX_RANDOM_STEPS = atoll(optarg);
+                if (MAX_RANDOM_STEPS == 0){
+                    fprintf(stderr, "Invalid value of maxmium steps for random mutation: %s\n", optarg);
+                    show_help = 1;
+                }
+                break;
+
+            case 'n':
+                NUM_THREAD = atoll(optarg);
+                if (NUM_THREAD == 0){
+                    fprintf(stderr, "Invalid value of the number of threads: %s\n", optarg);
+                    show_help = 1;
+                }
+                break;
+
+            case 'T':
+                fuzzer_timeout = atoll(optarg);
+                if (fuzzer_timeout == 0){
+                    fprintf(stderr, "Invalid value of the fuzzer: %s\n", optarg);
+                    show_help = 1;
+                }
+                break;
+
+            case 't':
+                SOURCE_TIMEOUT = atoll(optarg);
+                if (SOURCE_TIMEOUT == 0){
+                    fprintf(stderr, "Invalid value of the timeout for the execution of source binary: %s\n", optarg);
+                    show_help = 1;
+                }
+                break;
+
+            case 'm':
+                MAX_NUM_ONE_MUT = atoll(optarg);
+                if (MAX_NUM_ONE_MUT == 0){
+                    fprintf(stderr, "Invalid value of the maximum number of test case one mutation can produce: %s\n", optarg);
+                    show_help = 1;
+                }
+                break;
+
+            case 'l':
+                mut_level = atoi(optarg);
+                if (mut_level != 1 && mut_level != 2){
+                    fprintf(stderr, "Invalid value of mutation level: %s\n", optarg);
+                    show_help = 1;
+                }
+                break;
+
+            case '?':
+                if (opt == 'h' || opt == 'r' || opt == 'n' || opt == 'm' || opt == 't' || opt == 'T'){
+                    fprintf(stderr, "Option -%c need an argument\n", optopt);
+                }else if(isprint(optopt)){
+                    fprintf(stderr, "Unknow option -%c\n", optopt);
+                }else{
+                    fprintf(stderr, "Unknow option character 0x%x\n", optopt);
+                }
+                show_help = 1;
+                break;
+
+            default:
+                show_help = 1;
+        }
+    }
+
+    if (show_help == 1 || loaded == 0){
+        usage();
+    }
+
+    print_params();
+
+
     if (!init()) return -1;
     worker_pid = fork();
     if (worker_pid < 0){
@@ -274,9 +409,9 @@ int main(){
     // wait(NULL);
     // return 1;
 
-    signal(SIGINT, main_signal_handler);
-    signal(SIGKILL, main_signal_handler);
-    signal(SIGTERM, main_signal_handler);
+    signal(SIGINT, main_sig_handler);
+    signal(SIGKILL, main_sig_handler);
+    signal(SIGTERM, main_sig_handler);
     atexit(at_exit);
 
     std::vector<const char*> afl_envp;

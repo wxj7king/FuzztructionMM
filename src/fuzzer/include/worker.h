@@ -7,22 +7,30 @@
 class Worker{
 
 public:
-    inline static Patchpointslock source_pps;
-    inline static Patchpointslock source_unfuzzed_pps;
-    inline static Addr2iter addr2iter;
-    inline static Interestpp2masks addr2masks_global;
-    inline static Shm_para shm_para;
-    inline static std::string ftmm_dir;
-    inline static PpsSetLock interest_pps;
-    inline static struct mq_attr my_mqattr;
-    inline static std::mutex log_mtx;
-    inline static std::string log_path;
-    inline static NewSelectionConfig new_selection_config;
-    inline static bool fuzz_stop = false;
-    inline static pid_t source_pids[NUM_THREAD] = {-1};
+    typedef std::vector<pid_t> SourcePids;
+
+    static inline Patchpointslock source_pps;
+    static inline Patchpointslock source_unfuzzed_pps;
+    static inline Addr2iter addr2iter;
+    static inline Interestpp2masks addr2masks_global;
+    static inline PpsSetLock interest_pps;
+    static inline std::mutex log_mtx;
+    static inline SourcePids source_pids;
+
+    static inline Shm_para shm_para;
+    static inline std::string ftmm_dir;
+    static inline struct mq_attr my_mqattr;
+    static inline std::string log_path;
+    static inline NewSelectionConfig new_selection_config;
+
+    static inline size_t MAX_RANDOM_STEPS;
+    static inline size_t MAX_NUM_ONE_MUT;
+    static inline size_t NUM_THREAD;
+    static inline size_t SOURCE_TIMEOUT;
 
     // func
-    explicit Worker(int _id, int _level);
+    Worker(int _id, int _level);
+    ~Worker();
 
     static std::string sha256(const std::string &file_path);
     static void output_log(const std::string& msg);

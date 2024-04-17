@@ -10,17 +10,16 @@
 #define MQNAME "/FTMM_MQ"
 #define SHM_NAME "/FTMM_SHM"
 #define MAX_FILE_SIZE 16 * 1024
-#define MAX_INTEREST_SIZE 1024 * 1024
 #define MAX_REG_SIZE 16
 #define HAVOC_FUSION_STEPS 16
 #define MAX_HAVOC_STEPS 8
+#define MAX_ITERATION 1024
 
 /// TODO: make configurable
-#define MAX_RANDOM_STEPS 32
-#define MAX_ITERATION 1024
-#define MAX_NUM_ONE_MUT 1024
-#define NUM_THREAD 8
-#define SOURCE_TIMEOUT 3
+// #define MAX_RANDOM_STEPS 32
+// #define MAX_NUM_ONE_MUT 1024
+// #define NUM_THREAD 8
+// #define SOURCE_TIMEOUT 3
 
 /// defined types
 typedef struct patch_point{
@@ -42,7 +41,6 @@ typedef std::map<std::string, Patchpoint> Hash2pp;
 typedef std::set<std::string> StringSet;
 typedef std::map<std::string, std::string> PintoolArgs;
 typedef struct thread_arg{
-    int pid;
     int tid;
 }ThreadArg;
 typedef struct masks{

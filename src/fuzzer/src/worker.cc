@@ -26,7 +26,10 @@ enum MUTATION_TYPE{
     HAVOC
 };
 
-Worker::Worker(int _id, int _level) : id(_id), level(_level) { masks_ptr = nullptr;};
+Worker::Worker(int _id, int _level) : id(_id), level(_level) { 
+    masks_ptr = nullptr;
+}
+Worker::~Worker(){}
 
 std::string Worker::sha256(const std::string &file_path){
     unsigned char hash[SHA256_DIGEST_LENGTH];
