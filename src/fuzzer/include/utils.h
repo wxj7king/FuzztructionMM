@@ -9,7 +9,7 @@
 
 #define MQNAME "/FTMM_MQ"
 #define SHM_NAME "/FTMM_SHM"
-#define MAX_FILE_SIZE 16 * 1024
+#define MAX_FILE_SIZE 1024 * 1024
 #define MAX_REG_SIZE 16
 #define HAVOC_FUSION_STEPS 16
 #define MAX_HAVOC_STEPS 8
@@ -30,6 +30,7 @@ typedef struct test_case{
     char filename[255];
     char filehash[65];
     Patchpoint patch_point;
+    int mut_type;
 }TestCase;
 typedef std::vector<Patchpoint> Patchpoints;
 typedef struct pps2fuzz{

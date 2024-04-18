@@ -15,9 +15,8 @@
 #include <stdio.h>
 #include <math.h>
 #include <mqueue.h>
-#include <assert.h>
+//#include <assert.h>
 #include <iostream>
-#include <vector>
 #include <fstream>
 #include <sstream>
 #include <filesystem>
@@ -26,25 +25,28 @@ typedef struct patch_point{
     uint64_t addr;
     uint8_t reg_size;
 } Patchpoint;
+
 typedef struct test_case{
     char filename[255];
     char filehash[65];
     Patchpoint patch_point;
+    int mut_type;
 }TestCase;
 
 typedef struct my_mutator {
     afl_state_t *afl;
     unsigned char *buf;
     unsigned char *msg_buf;
-    uint64_t file_count;
-    Patchpoint last_mut;
+    size_t ts_counter;
     bool success;
     struct mq_attr my_mqattr;
     mqd_t mqd;
     unsigned int mq_pri;
-
+    char ts_description[256];
 } my_mutator_t;
+
 #define MQNAME "/FTMM_MQ"
+static const char *mut_types[] = {"byte_flip", "bit_flip", "rand_byte", "rand_byte0", "u8add", "inject_val", "combine", "havoc"};
 
 extern "C" {
 
@@ -74,73 +76,111 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
     // data->my_mqattr.mq_flags = O_NONBLOCK;
     // assert(mq_getattr(mqd, &old_attr) != -1);
     // assert(mq_setattr(mqd, &data->my_mqattr, &old_attr) != -1);
-
     data->mqd = mqd;
-    data->file_count = 0;
+    data->ts_counter = 0;
     data->afl = afl;
     if ((data->msg_buf = (unsigned char *)malloc(sizeof(TestCase))) == NULL) {
         perror("afl_custom_init malloc");
         return NULL;
     }
     data->mq_pri = 1;
-
+    data->success = false;
+    // data->afl->stage_name = (uint8_t *)"Fuzztruction--";
+    // data->afl->stage_short = (uint8_t *)"Fuzztruction--";
 
     return data;
 
 }
 
+size_t afl_custom_fuzz(my_mutator_t *data, uint8_t *buf, size_t buf_size,
+                       u8 **out_buf, uint8_t *add_buf,
+                       size_t add_buf_size,  // add_buf can be NULL
+                       size_t max_size) {
+    
+    // printf("in afl_custom_fuzz %ld, %ld\n", data->ts_counter, max_size);
+    // default untouched buf
+    u32 out_size = buf_size;
+    *out_buf = buf;
 
-size_t afl_custom_post_process(my_mutator_t *data, unsigned char *in_buf, size_t buf_size, unsigned char **out_buf) {
-    //return buf_size;
-    // default discard
-    size_t out_size = 0;
-    *out_buf = nullptr;
-
-    int ret = mq_receive(data->mqd, (char *)data->msg_buf, data->my_mqattr.mq_msgsize, &data->mq_pri);
+    ssize_t ret = mq_receive(data->mqd, (char *)data->msg_buf, data->my_mqattr.mq_msgsize, &data->mq_pri);
     if (ret == -1) {
         if (errno == EAGAIN){
             //printf("MQ currently empty.\n");
         }else{
             perror("mq_receive");
         }
+        data->success = false;
         return out_size;
     }
     
     TestCase *ts_ptr = (TestCase *)data->msg_buf;
     if (strcmp(ts_ptr->filename, "") != 0){
-        data->file_count++;
+        data->ts_counter++;
         data->success = true;
+        memset(data->buf, 0, MAX_FILE);
         *out_buf = data->buf;
         // read content
         std::string filename = ts_ptr->filename;
         std::stringstream buf;
         std::ifstream mutated_output(filename);
         if (mutated_output.is_open()){
-            mutated_output.read(reinterpret_cast<char *>(*out_buf), MAX_FILE);
+            mutated_output.read(reinterpret_cast<char *>(*out_buf), max_size);
             out_size = mutated_output.gcount();
         }
-
-        // buf << mutated_output.rdbuf();
-        // // set out_buf and buf_size
-        // memcpy(*out_buf, (buf.str()).c_str(), MAX_FILE_SIZE);
-        // buf_size = strlen((char *)(*out_buf));
-        // (*out_buf)[MAX_FILE_SIZE - 1] = '\0';
-
-        data->last_mut.addr = ts_ptr->patch_point.addr;
-        data->last_mut.reg_size = ts_ptr->patch_point.reg_size;
-        //printf("Addr: %ld, Value: %ld\n", ts_ptr->patch_point.addr, ts_ptr->patch_point.injectValue);
-        //printf("Content: \n%s\n", (buf.str()).c_str());
+        // printf("Addr: %lu, Value: %u\n", ts_ptr->patch_point.addr, ts_ptr->patch_point.reg_size);
+        // printf("Content: \n%s\n", *out_buf);
         std::filesystem::remove(filename);
     }else{
         data->success = false;
     }
 
     return out_size;
+}
+
+uint32_t afl_custom_fuzz_count(my_mutator_t *data, const u8 *buf, size_t buf_size){
+    data->afl->stage_name = (uint8_t *)"Fuzztruction--";
+    data->afl->stage_short = (uint8_t *)"Fuzztruction--";
+    if (data->afl->afl_env.afl_custom_mutator_only)
+        return (uint32_t)(64 * 1024);
+    else
+        return (uint32_t)(1024);
+}
+
+size_t afl_custom_post_process(my_mutator_t *data, unsigned char *in_buf, size_t buf_size, unsigned char **out_buf) {
+    size_t out_size = buf_size;
+    if (data->success){
+        *out_buf = in_buf;
+    }else{
+        if (unlikely(strcmp(reinterpret_cast<const char*>(data->afl->stage_name), "Fuzztruction--") != 0)){
+            data->success = true;
+            *out_buf = in_buf;
+        }else{
+            *out_buf = NULL;
+            out_size = 0;
+        }
+    }
+    return out_size;
+}
+
+const char *afl_custom_describe(my_mutator_t *data, size_t max_description_len){
+    //printf("in describe!\n");
+    char *ret = data->ts_description;
+    memset(ret, 0, 256);
+    if (data->success){
+        TestCase *ts_ptr = (TestCase *)data->msg_buf;
+        char addr[32];
+        snprintf(addr, 32, "0x%lx", ts_ptr->patch_point.addr);
+        //printf("addr: %lx, mut: %d\n", ts_ptr->patch_point.addr, ts_ptr->mut_type);
+        strcat(ret, "addr:");
+        strcat(ret, addr);
+        strcat(ret, ",mut:");
+        strcat(ret, mut_types[ts_ptr->mut_type]);
+    }
+    return ret;
 
 }
 
 void afl_custom_deinit(my_mutator_t *data) {
-
     free(data->buf);
     free(data);
     free(data->msg_buf);

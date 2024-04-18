@@ -34,6 +34,7 @@ static size_t NUM_THREAD = 1;
 static size_t SOURCE_TIMEOUT = 3;
 /// run forever if it is zero
 static size_t fuzzer_timeout = 0;
+static bool with_afl = false;
 
 
 void main_sig_handler(int sig){
@@ -374,7 +375,7 @@ int main(int argc, char **argv){
                 break;
 
             case '?':
-                if (opt == 'h' || opt == 'r' || opt == 'n' || opt == 'm' || opt == 't' || opt == 'T'){
+                if (opt == 'h' || opt == 'r' || opt == 'n' || opt == 'm' || opt == 't' || opt == 'T'|| opt == 'f'|| opt == 'l'){
                     fprintf(stderr, "Option -%c need an argument\n", optopt);
                 }else if(isprint(optopt)){
                     fprintf(stderr, "Unknow option -%c\n", optopt);
@@ -431,7 +432,11 @@ int main(int argc, char **argv){
     afl_argv.push_back("-passin");
     afl_argv.push_back("pass:xxxxx");
     afl_argv.push_back(0);
-    afl_envp.push_back("AFL_CUSTOM_MUTATOR_LIBRARY=/home/proj/proj/src/afl_customut/inject_ts_multi.so");
+    //afl_envp.push_back("AFL_CUSTOM_MUTATOR_LIBRARY=/home/proj/proj/src/afl_customut/inject_ts_multi.so");
+    // if (!with_afl){
+    //     afl_envp.push_back("AFL_CUSTOM_MUTATOR_ONLY=1");
+    // }
+    afl_envp.push_back("AFL_CUSTOM_MUTATOR_LIBRARY=/home/proj/proj/src/afl_customut/inject_ts_multi2.so");
     afl_envp.push_back(0);
 
     afl_pid = fork();

@@ -304,6 +304,7 @@ void Worker::mutations_1(Patchpoint &pp, int mut_type, size_t max_steps){
 
     for (size_t i = 0; i < max_steps; i ++){
         TestCase ts = fuzz_one(pintool_args, pp);
+        ts.mut_type = mut_type;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
     }
 }
@@ -326,6 +327,7 @@ void Worker::bit_flip(PintoolArgs& pintool_args, Patchpoint& pp){
 
         // mutate
         TestCase ts = fuzz_one(pintool_args, pp);
+        ts.mut_type = BIT_FLIP;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
         std::string fname = ts.filename;
         if (fname != ""){
@@ -358,6 +360,7 @@ void Worker::byte_flip(PintoolArgs& pintool_args, Patchpoint& pp){
 
         // mutate
         TestCase ts = fuzz_one(pintool_args, pp);
+        ts.mut_type = BYTE_FLIP;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
         std::string fname = ts.filename;
         if (fname != ""){
@@ -397,6 +400,7 @@ void Worker::random_byte(PintoolArgs& pintool_args, Patchpoint& pp, int rand_typ
 
         // mutate
         TestCase ts = fuzz_one(pintool_args, pp);
+        ts.mut_type = rand_type;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
         std::string fname = ts.filename;
         if (fname != ""){
@@ -435,6 +439,7 @@ void Worker::u8add(PintoolArgs& pintool_args, Patchpoint& pp){
 
         // mutate
         TestCase ts = fuzz_one(pintool_args, pp);
+        ts.mut_type = U8ADD;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
         std::string fname = ts.filename;
         if (fname != ""){
@@ -484,6 +489,7 @@ void Worker::combine(PintoolArgs& pintool_args, Patchpoint& pp){
 
         // mutate
         TestCase ts = fuzz_one(pintool_args, pp);
+        ts.mut_type = COMBINE;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
         std::string fname = ts.filename;
         if (fname != ""){
@@ -529,6 +535,7 @@ void Worker::havoc(PintoolArgs& pintool_args, Patchpoint& pp){
 
             // mutate
             TestCase ts = fuzz_one(pintool_args, pp);
+            ts.mut_type = HAVOC;
             mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
             std::string fname = ts.filename;
             if (fname != ""){
