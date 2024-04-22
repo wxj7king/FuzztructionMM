@@ -31,7 +31,14 @@ typedef struct test_case{
     char filehash[65];
     Patchpoint patch_point;
     int mut_type;
+    int worker_id;
 }TestCase;
+
+typedef struct posix_shm_para{
+    int shmfd;
+    unsigned char *shm_base_ptr;
+    size_t size_in_bytes;
+}PosixShmPara;
 
 typedef struct my_mutator {
     afl_state_t *afl;
@@ -40,18 +47,19 @@ typedef struct my_mutator {
     size_t ts_counter;
     bool success;
     struct mq_attr my_mqattr;
+    PosixShmPara posix_shm;
     mqd_t mqd;
     unsigned int mq_pri;
     char ts_description[256];
 } my_mutator_t;
 
 #define MQNAME "/FTMM_MQ"
-static const char *mut_types[] = {"byte_flip", "bit_flip", "rand_byte", "rand_byte0", "u8add", "inject_val", "combine", "havoc"};
+#define POSIX_SHM_NAME "FTMM_AFL_SHM"
 
+static const char *mut_types[] = {"byte_flip", "bit_flip", "rand_byte", "rand_byte0", "u8add", "inject_val", "combine", "havoc"};
 extern "C" {
 
 my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
-
     my_mutator_t *data = (my_mutator_t *)calloc(1, sizeof(my_mutator_t));
     if (!data) {
         perror("afl_custom_init calloc");
@@ -67,7 +75,7 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
     data->my_mqattr.mq_maxmsg = 10;
     data->my_mqattr.mq_msgsize = sizeof(TestCase);
     data->my_mqattr.mq_curmsgs = 0;
-    mqd_t mqd = mq_open (MQNAME, O_CREAT | O_RDWR,  0600, &data->my_mqattr);
+    mqd_t mqd = mq_open (MQNAME, O_RDWR,  0600, &data->my_mqattr);
     if (mqd == -1){
         perror("mq_open");
         return NULL;
@@ -76,6 +84,26 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
     // data->my_mqattr.mq_flags = O_NONBLOCK;
     // assert(mq_getattr(mqd, &old_attr) != -1);
     // assert(mq_setattr(mqd, &data->my_mqattr, &old_attr) != -1);
+
+    // initialize shared memory between fuzzer
+    if ((data->posix_shm.shmfd = shm_open(POSIX_SHM_NAME, O_RDWR, 0666)) != -1){
+        if ((data->posix_shm.shm_base_ptr = (unsigned char *)mmap(NULL, sizeof(size_t), PROT_READ | PROT_WRITE, MAP_SHARED, data->posix_shm.shmfd, 0)) == MAP_FAILED){
+            perror("mmap() failed\n");
+            return NULL;
+        }
+        data->posix_shm.size_in_bytes = *((size_t *)data->posix_shm.shm_base_ptr);
+        if ((data->posix_shm.shm_base_ptr = (unsigned char *)mremap(data->posix_shm.shm_base_ptr, sizeof(size_t), data->posix_shm.size_in_bytes, MREMAP_MAYMOVE)) == MAP_FAILED){
+            perror("mremap() failed\n");
+            return NULL;
+        }
+        // clear
+        *((size_t *)data->posix_shm.shm_base_ptr) = 0;
+
+    }else{
+        perror("shm_open() failed\n");
+        return NULL;
+    }
+
     data->mqd = mqd;
     data->ts_counter = 0;
     data->afl = afl;
@@ -85,9 +113,6 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
     }
     data->mq_pri = 1;
     data->success = false;
-    // data->afl->stage_name = (uint8_t *)"Fuzztruction--";
-    // data->afl->stage_short = (uint8_t *)"Fuzztruction--";
-
     return data;
 
 }
@@ -114,6 +139,9 @@ size_t afl_custom_fuzz(my_mutator_t *data, uint8_t *buf, size_t buf_size,
     }
     
     TestCase *ts_ptr = (TestCase *)data->msg_buf;
+    size_t *count_ptr = (size_t *)data->posix_shm.shm_base_ptr;
+    count_ptr[ts_ptr->worker_id]++;
+
     if (strcmp(ts_ptr->filename, "") != 0){
         data->ts_counter++;
         data->success = true;
@@ -148,12 +176,10 @@ uint32_t afl_custom_fuzz_count(my_mutator_t *data, const u8 *buf, size_t buf_siz
 
 size_t afl_custom_post_process(my_mutator_t *data, unsigned char *in_buf, size_t buf_size, unsigned char **out_buf) {
     size_t out_size = buf_size;
-    if (data->success){
-        *out_buf = in_buf;
-    }else{
+    *out_buf = in_buf;
+    if (!data->success){
         if (unlikely(strcmp(reinterpret_cast<const char*>(data->afl->stage_name), "Fuzztruction--") != 0)){
             data->success = true;
-            *out_buf = in_buf;
         }else{
             *out_buf = NULL;
             out_size = 0;
@@ -170,14 +196,13 @@ const char *afl_custom_describe(my_mutator_t *data, size_t max_description_len){
         TestCase *ts_ptr = (TestCase *)data->msg_buf;
         char addr[32];
         snprintf(addr, 32, "0x%lx", ts_ptr->patch_point.addr);
-        //printf("addr: %lx, mut: %d\n", ts_ptr->patch_point.addr, ts_ptr->mut_type);
         strcat(ret, "addr:");
         strcat(ret, addr);
         strcat(ret, ",mut:");
         strcat(ret, mut_types[ts_ptr->mut_type]);
+        //printf("addr: %lx, mut: %d\n", ts_ptr->patch_point.addr, ts_ptr->mut_type);
     }
     return ret;
-
 }
 
 void afl_custom_deinit(my_mutator_t *data) {
@@ -185,6 +210,7 @@ void afl_custom_deinit(my_mutator_t *data) {
     free(data);
     free(data->msg_buf);
     mq_close(data->mqd);
+    munmap(data->posix_shm.shm_base_ptr, data->posix_shm.size_in_bytes);
 
 }
 

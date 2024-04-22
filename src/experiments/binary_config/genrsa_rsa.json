@@ -1,0 +1,37 @@
+{
+    "generator": {
+        "env" : [
+            "LD_LIBRARY_PATH=/home/proj/proj/uninstrumented/openssl/"
+        ],
+        "bin_path" : "/home/proj/proj/uninstrumented/openssl/apps/openssl",
+        "args" : [
+            "genrsa",
+            "-aes128",
+            "-passout",
+            "pass:xxxxx",
+            "-out",
+            "@@",
+            "512"
+        ]
+    },
+
+    "target": {
+        "env" : [
+            "LD_LIBRARY_PATH=/home/proj/proj/openssl/"
+        ],
+        "bin_path" : "/home/proj/proj/openssl/apps/openssl",
+        "args" : [
+            "rsa",
+            "-check",
+            "-in",
+            "@@",
+            "-passin",
+            "pass:xxxxx"
+        ]
+    },
+
+    "afl++": {
+        "dir_in" : "/home/proj/proj/test/afl_test1/input",
+        "dir_out" : "/home/proj/proj/test/afl_test1/output"
+    }
+}

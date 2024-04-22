@@ -8,7 +8,6 @@ class Worker{
 
 public:
     typedef std::vector<pid_t> SourcePids;
-
     static inline Patchpointslock source_pps;
     static inline Patchpointslock source_unfuzzed_pps;
     static inline Addr2iter addr2iter;
@@ -16,17 +15,17 @@ public:
     static inline PpsSetLock interest_pps;
     static inline std::mutex log_mtx;
     static inline SourcePids source_pids;
-
-    static inline Shm_para shm_para;
+    static inline ShmPara shm;
+    static inline PosixShmPara posix_shm;
     static inline std::string ftmm_dir;
     static inline struct mq_attr my_mqattr;
     static inline std::string log_path;
     static inline NewSelectionConfig new_selection_config;
-
-    static inline size_t MAX_RANDOM_STEPS;
-    static inline size_t MAX_NUM_ONE_MUT;
-    static inline size_t NUM_THREAD;
-    static inline size_t SOURCE_TIMEOUT;
+    static inline size_t max_random_steps;
+    static inline size_t max_num_one_mut;
+    static inline size_t num_thread;
+    static inline size_t source_timeout;
+    static inline BinConfig source_config;
 
     // func
     Worker(int _id, int _level);
@@ -38,7 +37,7 @@ public:
 
     void generate_testcases();
     TestCase fuzz_one(PintoolArgs& pintool_args, Patchpoint &pp);
-    void mutations_1(Patchpoint &pp, int mut_type, size_t max_steps);
+    void mutations_1(Patchpoint &pp, int mut_type);
     void mutations_2(Patchpoint &pp, int mut_type, size_t max_steps);
     void bit_flip(PintoolArgs& pintool_args, Patchpoint& pp);
     void byte_flip(PintoolArgs& pintool_args, Patchpoint& pp);
@@ -55,6 +54,7 @@ private:
     int id;
     mqd_t mqd;
     int level;
+    size_t cur_mut_counter;
     std::string work_dir;
     Pps2fuzz selected_pps;
     Hash2pp hash2pp;

@@ -1,0 +1,3 @@
+Pin: pin-3.28-98749-6643ecee5
+Copyright 2002-2023 Intel Corporation.
+E:  Unable to load /home/proj/proj/src/pintool/mutate_ins_level1/obj-intel64/mutate_ins.so: dlopen failed: cannot locate symbol "_ZN10LEVEL_BASE9KNOBVALUEIhE10FromStringERKNSt3__112basic_stringIcNS2_11char_traitsIcEENS2_9allocatorIcEEEE" referenced by "/home/proj/proj/src/pintool/mutate_ins_level1/obj-intel64/mutate_ins.so"...

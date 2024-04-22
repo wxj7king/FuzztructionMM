@@ -9,6 +9,7 @@
 
 #define MQNAME "/FTMM_MQ"
 #define SHM_NAME "/FTMM_SHM"
+#define POSIX_SHM_NAME "FTMM_AFL_SHM"
 #define MAX_FILE_SIZE 1024 * 1024
 #define MAX_REG_SIZE 16
 #define HAVOC_FUSION_STEPS 16
@@ -31,6 +32,7 @@ typedef struct test_case{
     char filehash[65];
     Patchpoint patch_point;
     int mut_type;
+    int worker_id;
 }TestCase;
 typedef std::vector<Patchpoint> Patchpoints;
 typedef struct pps2fuzz{
@@ -55,7 +57,12 @@ typedef struct shm_para{
     int shm_id;
     unsigned char *shm_base_ptr;
     size_t size_in_bytes;
-}Shm_para;
+}ShmPara;
+typedef struct posix_shm_para{
+    int shmfd;
+    unsigned char *shm_base_ptr;
+    size_t size_in_bytes;
+}PosixShmPara;
 typedef struct pps_lock{
     Patchpoints pps;
     std::mutex mutex;
@@ -69,7 +76,7 @@ typedef struct interestpp2masks{
     std::mutex mutex;
 }Interestpp2masks;
 
-/// the second of the pair is a map from a hash to a mask
+/// the second item of the pair is a map from a hash to a mask
 typedef std::map < uint64_t, std::map<std::string, Masks> > Pp2masks;
 
 inline auto pps_compare = [](const Patchpoint a, const Patchpoint b){ return a.addr < b.addr; };
@@ -82,6 +89,17 @@ typedef struct new_selection_config{
     size_t interest_num;
     size_t random_num;
 }NewSelectionConfig;
+
+typedef struct bin_config{
+    std::vector<std::string> env;
+    std::string bin_path;
+    std::vector<std::string> args;
+}BinConfig;
+
+typedef struct afl_config{
+    std::string dir_in;
+    std::string dir_out;
+}AflConfig;
 
 
 #endif

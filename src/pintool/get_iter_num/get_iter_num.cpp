@@ -5,6 +5,7 @@
 #include <time.h>
 #include <algorithm>
 #include <set>
+#include <fstream>
 
 using std::cerr;
 using std::cout;
@@ -18,8 +19,10 @@ static std::set<std::string> lib_blacklist;
 static size_t count = 0;
 
 KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify addrs of instructions");
+KNOB<std::string> KnobOutput(KNOB_MODE_WRITEONCE, "pintool", "o", "get_iter_output", "specify the output file path");
 static UINT64 addr = 0;
 static int flag = 0;
+static std::ofstream OutFile;
 
 inline VOID PIN_FAST_ANALYSIS_CALL Ins_counter(ADDRINT offset){
     count++;
@@ -68,7 +71,12 @@ VOID InstrumentTrace(TRACE trace, VOID *v){
 }
 
 VOID Fini(INT32 code, void *v){
-    printf("%p,%ld\n", (void *)addr, count);
+    if (OutFile.is_open()){
+        OutFile.setf(std::ios::showbase);
+        OutFile << (void *)addr << "," << count;
+    }
+    OutFile.close();
+    //printf("%p,%ld\n", (void *)addr, count);
     return;
 }
 
@@ -83,6 +91,7 @@ VOID Init(){
     lib_blacklist.insert("[vdso]");
     lib_blacklist.insert("libc.so.6");
     addr = Uint64FromString(KnobNewAddr.Value());
+    OutFile.open(KnobOutput.Value().c_str());
     //printf("%lu\n", addr);
     return;
 }

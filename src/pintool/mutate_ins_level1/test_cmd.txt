@@ -1,0 +1,1 @@
+time LD_LIBRARY_PATH=/home/proj/proj/uninstrumented/openssl/ /home/proj/proj/tools/pin-3.28-98749-g6643ecee5-gcc-linux/pin -t /home/proj/proj/src/pintool/mutate_ins_multi/obj-intel64/mutate_ins.so -addr 2109620,0x1d28dd,0x1d279a -val 4096,423,423 -mut 4,2,2 -idx 0,1,1 -- /home/proj/proj/uninstrumented/openssl/apps/openssl genrsa -aes128 -passout pass:xxxxx -out /tmp/rsak2 512
