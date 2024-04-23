@@ -1,0 +1,4 @@
+Pin: pin-3.28-98749-6643ecee5
+Copyright 2002-2023 Intel Corporation.
+A:  /tmp_proj/pin_jenkins/workspace/pypl-pin-nightly/GitPin/Source/pin/pin/image.cpp: IMG_Name: 2882: assertion failed: IMG_valid(img)
+

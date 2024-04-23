@@ -26,6 +26,7 @@ public:
     static inline size_t num_thread;
     static inline size_t source_timeout;
     static inline BinConfig source_config;
+    static inline InsToDisas ins2disas;
 
     // func
     Worker(int _id, int _level);

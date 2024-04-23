@@ -24,6 +24,7 @@
 typedef struct patch_point{
     uint64_t addr;
     uint8_t reg_size;
+    uint64_t next_mov_b4_jmp;
 } Patchpoint;
 
 typedef struct test_case{

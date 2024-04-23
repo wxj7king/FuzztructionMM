@@ -27,101 +27,114 @@ enum MUTATION_TYPE{
 typedef struct patch_point{
     ADDRINT addr;
     UINT64 mut_type;
-    UINT64 iter_num;
+    UINT64 iter_total;
+    UINT64 iter2mut;
     UINT64 mut_offset;
 } Patchpoint;
 std::set<std::string> lib_blacklist;
 static Patchpoint patch_point;
 static BOOL detach_flag = false;
+static BOOL fliped = false;
 static UINT8 u8_adder = 0;
 static int interest_val[] = {0, 1, 2, 0x80};
 static UINT8 *reg_val = NULL;
+static UINT8 *flags_val = NULL;
 static UINT64 cur_iter = 0;
+static ADDRINT branch_addr = 0;
+static std::set<ADDRINT> inst_set;
+static UINT8 havoc_count = 0;
 
 std::random_device rd;
 std::mt19937 gen(rd()); // Mersenne Twister engine
 std::uniform_int_distribution<UINT8> dist_byte;
 std::uniform_int_distribution<UINT8> dist_idx;
-std::uniform_int_distribution<UINT8> dist_havoc(0, 3);
+std::uniform_int_distribution<UINT8> dist_havoc(0, 4);
+std::uniform_int_distribution<UINT32> u32_dist;
+
 
 KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify addrs of instructions");
 KNOB<std::string> KnobNewMut(KNOB_MODE_WRITEONCE, "pintool", "mut", "0", "specify mutation types");
 KNOB<std::string> KnobNewIterNum(KNOB_MODE_WRITEONCE, "pintool", "iter", "0", "specify how iteration this ins will be executed in a loop");
+KNOB<std::string> KnobNewIter2Mut(KNOB_MODE_WRITEONCE, "pintool", "iter2mut", "0", "specify in which iteration its mutation will be applied");
 KNOB<std::string> KnobNewOffset(KNOB_MODE_WRITEONCE, "pintool", "off", "0", "index of byte or bit in the register");
 KNOB<std::string> KnobNewU8Adder(KNOB_MODE_WRITEONCE, "pintool", "u8", "0", "value of uint8_t added to a byte in a register");
+KNOB<std::string> KnobNewBranchAddr(KNOB_MODE_WRITEONCE, "pintool", "baddr", "0", "specify addr of branch instruction");
 
 VOID ByteFlip(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
-    assert(patch_point.mut_offset < reg_size);
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("byte flip: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
     // flip byte
-    reg_val[patch_point.mut_offset] ^= 0xff;
+    if (cur_iter == patch_point.iter2mut)
+        reg_val[patch_point.mut_offset] ^= 0xff;
     //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
     cur_iter++;
-    if (cur_iter >= patch_point.iter_num) PIN_Detach();
+    if (cur_iter >= patch_point.iter2mut && branch_addr == 0) PIN_Detach();
     return;
 }
 
 VOID BitFlip(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
-    assert(patch_point.mut_offset < reg_size * 8);
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("bit flip: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
     // flip bit
-    reg_val[patch_point.mut_offset / 8] ^= 1 << (patch_point.mut_offset % 8);
+    if (cur_iter == patch_point.iter2mut)
+        reg_val[patch_point.mut_offset / 8] ^= 1 << (patch_point.mut_offset % 8);
     //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
     cur_iter++;
-    if (cur_iter >= patch_point.iter_num) PIN_Detach();
+    if (cur_iter >= patch_point.iter2mut && branch_addr == 0) PIN_Detach();
     return;
 }
 VOID RandomByte(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
-    // use flip_idxes as the number of current steps
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("random byte: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
     // random byte at random index
     // UINT8 random_idx = dist_idx(gen) % reg_size;
     // UINT8 random_val = dist_byte(gen);
     // reg_val[random_idx] = random_val;
-    if (patch_point.mut_offset != 0) 
-        reg_val[patch_point.mut_offset] = dist_byte(gen);
-    else 
-        reg_val[dist_idx(gen) % reg_size] = dist_byte(gen);
+    if (cur_iter == patch_point.iter2mut)
+    {
+        if (patch_point.mut_offset != 0) 
+            reg_val[patch_point.mut_offset] = dist_byte(gen);
+        else 
+            reg_val[dist_idx(gen) % reg_size] = dist_byte(gen);
+    }
+    
     //printf("random idx: %d, random byte: %d, mutated value of register is %ld\n", random_idx, random_val, *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
     cur_iter++;
-    if (cur_iter >= patch_point.iter_num) PIN_Detach();
+    if (cur_iter >= patch_point.iter2mut && branch_addr == 0) PIN_Detach();
     return;
 }
 
 VOID RandomByte0(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
-    // use flip_idxes as the number of current steps
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("random byte0: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
     // random byte at 0th byte
-    reg_val[0] = dist_byte(gen);
+    if (cur_iter == patch_point.iter2mut)
+        reg_val[0] = dist_byte(gen);
     //printf("at idx 0, random byte: %d, mutated value of register is %ld\n", reg_val[0], *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
     cur_iter++;
-    if (cur_iter >= patch_point.iter_num) PIN_Detach();
+    if (cur_iter >= patch_point.iter2mut && branch_addr == 0) PIN_Detach();
     return;
 }
 
 VOID U8Add(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
-    assert(patch_point.mut_offset < reg_size);
     PIN_GetContextRegval(ctx, reg, reg_val);
-    printf("u8 adder: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
+    //printf("u8 adder: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
     // xor with uint8 value
-    reg_val[patch_point.mut_offset] ^= u8_adder;
-    printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
+    if (cur_iter == patch_point.iter2mut)
+        reg_val[patch_point.mut_offset] ^= u8_adder;
+    //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
     cur_iter++;
-    if (cur_iter >= patch_point.iter_num) PIN_Detach();
+    if (cur_iter >= patch_point.iter2mut && branch_addr == 0) PIN_Detach();
     return;
 }
 
 VOID Havoc(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
-    // use flip_idxes as the number of current steps
+    if (havoc_count >= 4) return;
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("havoc: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
     // randomly select a mutation
@@ -136,11 +149,94 @@ VOID Havoc(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
     }else if (mut == 3){
         reg_val[0] = interest_val[dist_byte(gen) % 4];
         for (size_t i = 1; i < reg_size; i++) reg_val[i] = 0;
-    }
+    }// do not mutate if mut == 4
+    if (mut != 4) havoc_count++;
+
     //printf("mut: %d, mutated value of register is %ld\n", mut, *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
-    cur_iter++;
-    if (cur_iter >= patch_point.iter_num) PIN_Detach();
+    if (havoc_count >= 4 && branch_addr == 0) PIN_Detach();
+    return;
+}
+
+// VOID BranchFlip(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
+//     printf("curr iter %ld\n", cur_iter);
+//     PIN_GetContextRegval(ctx, reg, flags_val);
+//     // ZF mask is 0x0040
+//     if (cur_iter - 1 == patch_point.iter2mut){
+//         printf("branch flip at %p\n", (void *)Ip);
+//         flags_val[0] ^= 0x40;
+//         cur_iter++;
+//     }
+//     PIN_SetContextRegval(ctx, reg, flags_val);
+//     return;
+// }
+
+// VOID BranchFlip(ADDRINT executeat_addr, CONTEXT *ctx){ 
+//     //printf("curr iter %ld\n", cur_iter);
+//     PIN_GetContextRegval(ctx, REG_FLAGS, flags_val);
+//     // ZF mask is 0x0040
+//     if (cur_iter - 1 == patch_point.iter2mut){
+//         printf("branch flip at %p, iter: %ld\n", (void *)executeat_addr, cur_iter);
+//         flags_val[0] ^= 0x40;
+//         PIN_SetContextReg(ctx, REG_INST_PTR, executeat_addr);
+//         cur_iter++;
+//     }
+//     PIN_SetContextRegval(ctx, REG_FLAGS, flags_val);
+//     PIN_ExecuteAt(ctx);
+// }
+
+// VOID BranchFlip(ADDRINT branch_target_addr, ADDRINT fall_though_addr, BOOL if_jz, CONTEXT *ctx){ 
+//     //printf("curr iter %ld\n", cur_iter);
+//     PIN_GetContextRegval(ctx, REG_FLAGS, flags_val);
+//     ADDRINT execat_addr;
+//     // ZF mask is 0x0040
+//     if (cur_iter - 1 == patch_point.iter2mut){
+        
+//         if (flags_val[0] & 0x40){
+//             if (if_jz)
+//                 execat_addr = branch_target_addr;
+//             else
+//                 execat_addr = fall_though_addr;
+//         }else{
+//             if (if_jz)
+//                 execat_addr = fall_though_addr;
+//             else
+//                 execat_addr = branch_target_addr;
+//         }
+//         PIN_SetContextReg(ctx, REG_INST_PTR, execat_addr);
+//         printf("branch flip at %p, iter: %ld\n", (void *)execat_addr, cur_iter);
+//         cur_iter++;
+//     }
+//     PIN_ExecuteAt(ctx);
+// }
+
+VOID BranchFlip(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
+    //printf("curr iter %ld\n", cur_iter);
+    if (fliped) return;
+    PIN_GetContextRegval(ctx, reg, flags_val);
+    // ZF mask is 0x0040
+    if (cur_iter - 1 == patch_point.iter2mut){
+        printf("branch flip at %p\n", (void *)Ip);
+        BOOL if_zero = true;
+        for (size_t i = 0; i < reg_size; i++)
+        {
+            if (flags_val[i] != 0){
+                if_zero = false;
+                break;
+            }
+        }
+        if (if_zero){
+            flags_val[0] = 1;
+        }else{
+            for (size_t i = 0; i < reg_size; i++)
+            {
+                flags_val[i] = 0;
+            }
+        }
+        fliped = true;
+        PIN_Detach();
+    }
+    PIN_SetContextRegval(ctx, reg, flags_val);
     return;
 }
 
@@ -149,15 +245,95 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
     //xed_iclass_enum_t ins_opcode = (xed_iclass_enum_t)INS_Opcode(ins);
     //printf("instruction@%p: %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
     ADDRINT addr_offset = (INS_Address(ins) - baseAddr);
-    if (patch_point.addr != addr_offset) return;
-    detach_flag = true;
+    if (patch_point.addr != addr_offset && branch_addr != addr_offset) return;
+    if (inst_set.count(addr_offset) == 1) return;
+    inst_set.insert(addr_offset);
 
-    printf("instruction@%p, mutation type: %ld, end flag=%d\n", (void *)addr_offset, patch_point.mut_type, detach_flag);
     IPOINT ipoint;
     REG reg2mut = REG_INVALID();
     REGSET regsetIn, regsetOut;
     UINT32 reg_size = 0;
+    
+    /// mov ins that determines branch taken
+    if (addr_offset == branch_addr){
+        printf("branch flip@%p, %s\n", (void *)addr_offset, INS_Disassemble(ins).c_str());
+        if (INS_IsMemoryRead(ins)){
+            if (!INS_OperandIsReg(ins, 0)) return;
+            reg2mut = INS_OperandReg(ins, 0);
+            //printf("data read instruction@%p, %s, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str(), REG_StringShort(reg2mut).c_str());
+            ipoint = IPOINT_AFTER;
+        }
 
+        if (INS_IsMemoryWrite(ins)){
+            if (!INS_OperandIsReg(ins, 1)) return;
+            reg2mut = INS_OperandReg(ins, 1);
+            //printf("data write instruction@%p, %s, %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str(), REG_StringShort(reg2mut).c_str());
+            ipoint = IPOINT_BEFORE;
+        }
+
+        REGSET_Insert(regsetIn, reg2mut);
+        REGSET_Insert(regsetIn, REG_FullRegName(reg2mut));
+        REGSET_Insert(regsetOut, reg2mut);
+        REGSET_Insert(regsetOut, REG_FullRegName(reg2mut));
+        reg_size = REG_Size(reg2mut);
+        flags_val = (UINT8 *)calloc(1, reg_size);
+        INS_InsertCall(ins, ipoint, (AFUNPTR)BranchFlip,
+                        IARG_INST_PTR,// application IP
+                        IARG_UINT32, reg2mut,
+                        IARG_UINT32, reg_size,
+                        IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
+                        IARG_END);
+        return;
+    }
+
+    // if (addr_offset == branch_addr){
+    //     printf("branch flip@%p, %s\n", (void *)addr_offset, INS_Disassemble(ins).c_str());
+    //     flags_val = (UINT8 *)calloc(1, REG_Size(REG_FLAGS));
+    //     printf("test: %s\n", INS_Disassemble(INS_Prev(ins)).c_str());
+    //     INS prev_ins = INS_Prev(ins);
+    //     if (!INS_Valid(prev_ins)) return;
+    //     // xed_iclass_enum_t ins_opcode = (xed_iclass_enum_t)INS_Opcode(ins);
+    //     // BOOL if_jz = (ins_opcode == XED_ICLASS_JZ);
+    //     // INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)BranchFlip,
+    //     //                 //IARG_INST_PTR,
+    //     //                 IARG_ADDRINT, INS_DirectControlFlowTargetAddress(ins),
+    //     //                 IARG_ADDRINT, INS_NextAddress(ins),
+    //     //                 IARG_BOOL, if_jz,
+    //     //                 IARG_CONTEXT, 
+    //     //                 IARG_END);
+        
+    //     // INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)BranchFlip,
+    //     //                 IARG_INST_PTR,// application IP
+    //     //                 IARG_CONTEXT,
+    //     //                 IARG_END);
+
+    //     // reg2mut = REG_FLAGS;
+    //     // ipoint = IPOINT_BEFORE;
+    //     // REGSET_Insert(regsetIn, reg2mut);
+    //     // REGSET_Insert(regsetIn, REG_FullRegName(reg2mut));
+    //     // REGSET_Insert(regsetOut, reg2mut);
+    //     // REGSET_Insert(regsetOut, REG_FullRegName(reg2mut));
+    //     // reg_size = REG_Size(reg2mut);
+    //     // printf("flags size:%d\n", reg_size);
+    //     // flags_val = (UINT8 *)calloc(1, reg_size);
+    //     // INS_InsertCall(ins, ipoint, (AFUNPTR)BranchFlip,
+    //     //                 IARG_INST_PTR,// application IP
+    //     //                 IARG_UINT32, reg2mut,
+    //     //                 IARG_UINT32, reg_size,
+    //     //                 IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
+    //     //                 IARG_END);
+                        
+    //     // INS_InsertCall(prev_ins, IPOINT_BEFORE, (AFUNPTR)BranchFlip_dummy,
+    //     //                 IARG_INST_PTR,// application IP
+    //     //                 IARG_UINT32, reg2mut,
+    //     //                 IARG_UINT32, reg_size,
+    //     //                 IARG_END);
+    //     detach_flag = true;
+    //     return;
+    // }
+    printf("instruction@%p, mutation type: %ld, end flag=%d\n", (void *)addr_offset, patch_point.mut_type, detach_flag);
+
+    /// data read and write
     if (INS_IsMemoryRead(ins)){
         if (!INS_OperandIsReg(ins, 0)) return;
         reg2mut = INS_OperandReg(ins, 0);
@@ -198,6 +374,7 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
                         IARG_END);
             break;
         case RANDOM_BYTE:
+            patch_point.iter2mut = u32_dist(gen) % patch_point.iter_total;
             INS_InsertCall(ins, ipoint, (AFUNPTR)RandomByte,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
@@ -215,6 +392,7 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
                         IARG_END);
             break;
         case RANDOM_BYTE0:
+            patch_point.iter2mut = u32_dist(gen) % patch_point.iter_total;
             INS_InsertCall(ins, ipoint, (AFUNPTR)RandomByte0,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
@@ -250,22 +428,16 @@ const char* StripPath(const char* path)
 VOID InstrumentTrace(TRACE trace, VOID *v){
     if (detach_flag) return;
     ADDRINT baseAddr = 0;
-    RTN rtn = TRACE_Rtn(trace);
     std::string img_name;
-    if (RTN_Valid(rtn)){
-        IMG img = SEC_Img(RTN_Sec(rtn));
-        img_name = StripPath(IMG_Name(img).c_str());
-        if (lib_blacklist.find(img_name) != lib_blacklist.end()) return;
-        baseAddr = IMG_LowAddress(img);
-    }
-    else return;
-    //printf("In %s\n", img_name.c_str());
-
+    IMG img = IMG_FindByAddress(TRACE_Address(trace));
+    if (!IMG_Valid(img)) return;
+    img_name = StripPath(IMG_Name(img).c_str());
+    if (lib_blacklist.find(img_name) != lib_blacklist.end()) return;
+    baseAddr = IMG_LowAddress(img);
     for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
         for(INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)){
             InstrumentIns(ins, baseAddr);
         }
-
     }
 }
 
@@ -276,6 +448,7 @@ void Fini(INT32 code, void *v){
     // printf("write counts: %ld\n", write_count);
 	// printf("read number of insts: %ld\n", instmap.size());
     free(reg_val);
+    free(flags_val);
     return;
 }
 
@@ -296,11 +469,14 @@ BOOL Init(){
 
     patch_point.addr = Uint64FromString(KnobNewAddr.Value());
     patch_point.mut_type = std::stoi(KnobNewMut.Value());
-    patch_point.iter_num = std::stoul(KnobNewIterNum.Value());
+    patch_point.iter_total = std::stoul(KnobNewIterNum.Value());
+    patch_point.iter2mut = std::stoul(KnobNewIter2Mut.Value());
     patch_point.mut_offset = std::stoul(KnobNewOffset.Value());
+
+    branch_addr = Uint64FromString(KnobNewBranchAddr.Value());
     u8_adder = std::stoul(KnobNewU8Adder.Value());
 
-    printf("pp: %p, %ld, %ld, %ld\n", (void *)patch_point.addr, patch_point.mut_type, patch_point.iter_num, patch_point.mut_offset);
+    printf("pp: %p, %ld, %ld, %ld, %p\n", (void *)patch_point.addr, patch_point.mut_type, patch_point.iter_total, patch_point.mut_offset, (void *)branch_addr);
 
     return true;
 }

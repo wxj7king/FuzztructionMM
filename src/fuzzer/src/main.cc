@@ -104,7 +104,8 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
     }
     oss << "/home/proj/proj/tools/pin-3.28-98749-g6643ecee5-gcc-linux/pin" << " ";
     oss << "-t" << " ";
-    oss << "/home/proj/proj/src/pintool/find_inst_sites3/obj-intel64/find_inst_sites.so" << " ";
+    //oss << "/home/proj/proj/src/pintool/find_inst_sites3/obj-intel64/find_inst_sites.so" << " ";
+    oss << "/home/proj/proj/src/pintool/find_inst_sites4/obj-intel64/find_inst_sites.so" << " ";
     oss << "-o" << " ";
     oss << find_ins_out << " ";
     oss << "--" << " ";
@@ -122,23 +123,67 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
     std::string cmd = oss.str();
     //printf("cmd: %s\n", cmd.c_str());
     if (system(cmd.c_str()) != 0) return false;
-    std::ifstream file(find_ins_out);
+
+    // hijack!
+    //std::ifstream file(find_ins_out);
+
+    std::ifstream file("./output");
+    std::vector<std::string> lines;
     if (file.is_open()){
         std::string line;
-        while (std::getline(file, line))
-        {
-            Patchpoint pp;
-            size_t del_idx = line.find(',');
-            pp.addr = std::stoul(line.substr(0, del_idx), nullptr, 16); 
-            pp.reg_size = (uint8_t)std::stoul(line.substr(del_idx + 1, line.length()));
-            // printf("%lx, %u\n", pp.addr, pp.reg_size);
-            if (pp.reg_size == 0) continue;
-            patch_points.pps.push_back(pp);
-        }
+        while (std::getline(file, line)) 
+            lines.push_back(line);
         file.close();
     }else{
         return false;
     }
+
+    for (size_t i = 0; i < lines.size(); i++)
+    {
+        Patchpoint pp;
+        std::string line = lines[i];
+        size_t del_idx = line.find('@');
+        std::string disas = line.substr(0, del_idx);
+        line = line.substr(del_idx + 1, line.length());
+
+        del_idx = line.find(',');
+        //printf("dd: %s, %d\n", line.c_str(), del_idx);
+        pp.addr = std::stoul(line.substr(0, del_idx), nullptr, 16); 
+        pp.reg_size = (uint8_t)std::stoul(line.substr(del_idx + 1, line.length()));
+        /// skip jmp ins
+        if (pp.reg_size == 32) continue;
+        /// filter possible invalid ins
+        if (pp.reg_size == 0) continue;
+
+        uint64_t found_mov_b4_jmp_addr = 0;
+        size_t max_search_depth = 500;
+        size_t cap = std::min(lines.size(), i + max_search_depth);
+        for (size_t j = i + 1; j < cap; j++)
+        {
+            if ((lines[j].find("jz") != std::string::npos) || (lines[j].find("jnz") != std::string::npos) ){
+                if (j - 1 != i) {
+                    std::string tmp_str = lines[j - 1];
+                    //std::cout << tmp_str << std::endl;
+                    /// a sequence of jmp, just skip
+                    assert(tmp_str.find("mov") != std::string::npos);
+                    tmp_str = tmp_str.substr(tmp_str.find('@') + 1, tmp_str.length());
+                    tmp_str = tmp_str.substr(0, tmp_str.find(','));
+                    found_mov_b4_jmp_addr = std::stoul(tmp_str, nullptr, 16); 
+                    break;
+                }else{
+                    /// skip mov ins that has a direct effect on its following cond jmp
+                    break;
+                }
+            }
+        }
+        // 0 or addr
+        pp.next_mov_b4_jmp = found_mov_b4_jmp_addr;
+        Worker::ins2disas[pp.addr] = disas;
+        //printf("%s, %p, %u, %p\n", disas.c_str(), (void *)pp.addr, pp.reg_size, (void *)pp.next_mov_b4_jmp);
+
+        patch_points.pps.push_back(pp);
+    }
+    
 
     if (!std::filesystem::remove(source_out)) std::cerr << "find pps: delete file source_out failed\n";
     if (!std::filesystem::remove(find_ins_out)) std::cerr << "find pps: delete file find_ins_out failed\n";
@@ -159,7 +204,7 @@ static void child_process(){
         perror("find_patchpoints() failed!\n");
         return;
     }
-    // return;
+    //return;
     Worker::source_unfuzzed_pps.pps = Worker::source_pps.pps;
     
     // std::random_device rd;
@@ -507,6 +552,7 @@ int main(int argc, char **argv){
         child_process();
         _exit(0);
     }
+
     // wait(NULL);
     // return 1;
 

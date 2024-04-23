@@ -26,6 +26,7 @@
 typedef struct patch_point{
     uint64_t addr;
     uint8_t reg_size;
+    uint64_t next_mov_b4_jmp;
 } Patchpoint;
 typedef struct test_case{
     char filename[255];
@@ -43,6 +44,7 @@ typedef struct pps2fuzz{
 typedef std::map<std::string, Patchpoint> Hash2pp;
 typedef std::set<std::string> StringSet;
 typedef std::map<std::string, std::string> PintoolArgs;
+typedef std::map<uint64_t, std::string> InsToDisas;
 typedef struct thread_arg{
     int tid;
 }ThreadArg;

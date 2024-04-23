@@ -332,61 +332,125 @@ void Worker::mutations_1(Patchpoint &pp, int mut_type){
     {
     case BIT_FLIP:
         for (size_t i = 0; i < pp.reg_size * 8; i++)
-        {
+        {   
             pintool_args["-off"] = std::to_string(i);
-            TestCase ts = fuzz_one(pintool_args, pp);
-            ts.mut_type = mut_type;
-            mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+            for (size_t j = 0; j < num_iter; j++)
+            {
+                pintool_args["-iter2mut"] = std::to_string(j);
+                pintool_args["-baddr"] = "0";
+                TestCase ts = fuzz_one(pintool_args, pp);
+                ts.mut_type = mut_type;
+                mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+
+                /// combine branch flip
+                if (pp.next_mov_b4_jmp != 0){
+                    pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
+                    TestCase ts = fuzz_one(pintool_args, pp);
+                    ts.mut_type = mut_type;
+                    mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+                }
+            }
+            
         }
         break;
     case BYTE_FLIP:
         for (size_t i = 0; i < pp.reg_size; i++)
         {
             pintool_args["-off"] = std::to_string(i);
-            TestCase ts = fuzz_one(pintool_args, pp);
-            ts.mut_type = mut_type;
-            mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+            for (size_t j = 0; j < num_iter; j++)
+            {
+                pintool_args["-iter2mut"] = std::to_string(j);
+                pintool_args["-baddr"] = "0";
+                TestCase ts = fuzz_one(pintool_args, pp);
+                ts.mut_type = mut_type;
+                mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+
+                /// combine branch flip
+                if (pp.next_mov_b4_jmp != 0){
+                    pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
+                    TestCase ts = fuzz_one(pintool_args, pp);
+                    ts.mut_type = mut_type;
+                    mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+                }
+            }
+
         }
         break;
     case RANDOM_BYTE0:
         for (size_t i = 0; i < max_random_steps; i++)
         {
+            pintool_args["-baddr"] = "0";
             TestCase ts = fuzz_one(pintool_args, pp);
             ts.mut_type = mut_type;
             mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
-        }
-        break;
-    case RANDOM_BYTE:
-        // random index and random byte
-        for (size_t i = 0; i < max_random_steps; i++)
-        {
-            TestCase ts = fuzz_one(pintool_args, pp);
-            ts.mut_type = mut_type;
-            mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
-        }
-        // specified index and random byte
-        for (size_t i = 1; i < 4; i++)
-        {   
-            pintool_args["-off"] = std::to_string(i);
-            for (size_t j = 0; j < max_random_steps; j++)
-            {   
+
+            if (pp.next_mov_b4_jmp != 0){
+                pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
                 TestCase ts = fuzz_one(pintool_args, pp);
                 ts.mut_type = mut_type;
                 mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
             }
         }
         break;
+    case RANDOM_BYTE:
+        // random index and random byte
+        for (size_t i = 0; i < max_random_steps; i++)
+        {   
+            pintool_args["-baddr"] = "0";
+            TestCase ts = fuzz_one(pintool_args, pp);
+            ts.mut_type = mut_type;
+            mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+
+            if (pp.next_mov_b4_jmp != 0){
+                pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
+                TestCase ts = fuzz_one(pintool_args, pp);
+                ts.mut_type = mut_type;
+                mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+            }
+        }
+        // specified index and random byte
+        for (size_t i = 1; i < 4; i++)
+        {   
+            pintool_args["-off"] = std::to_string(i);
+            for (size_t j = 0; j < max_random_steps; j++)
+            {
+                pintool_args["-baddr"] = "0";
+                TestCase ts = fuzz_one(pintool_args, pp);
+                ts.mut_type = mut_type;
+                mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+
+                if (pp.next_mov_b4_jmp != 0){
+                    pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
+                    TestCase ts = fuzz_one(pintool_args, pp);
+                    ts.mut_type = mut_type;
+                    mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+                }
+            }
+        }
+        break;
     case U8ADD:
-        if (pp.reg_size > 4) return;
-        for (size_t i = 0; i < 4; i++)
+        //if (pp.reg_size > 4) return;
+        for (size_t i = 0; i < 2; i++)
         {   
             pintool_args["-off"] = std::to_string(i);
             for (size_t j = 0; j < 256; j++)
             {
-                pintool_args["-u8"] = j;
-                TestCase ts = fuzz_one(pintool_args, pp);
-                ts.mut_type = mut_type;
-                mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+                for (size_t k = 0; k < num_iter; k++){
+                    pintool_args["-iter2mut"] = std::to_string(k);
+                    pintool_args["-baddr"] = "0";
+                    pintool_args["-u8"] = std::to_string(j);
+                    TestCase ts = fuzz_one(pintool_args, pp);
+                    ts.mut_type = mut_type;
+                    mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+
+                    if (pp.next_mov_b4_jmp != 0){
+                        pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
+                        TestCase ts = fuzz_one(pintool_args, pp);
+                        ts.mut_type = mut_type;
+                        mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+                    }
+                    
+                }
             }
         }
         break;
@@ -395,10 +459,17 @@ void Worker::mutations_1(Patchpoint &pp, int mut_type){
         break;
     case HAVOC:
         for (size_t i = 0; i < max_random_steps; i++)
-        {
+        {   
+            pintool_args["-baddr"] = "0";
             TestCase ts = fuzz_one(pintool_args, pp);
             ts.mut_type = mut_type;
             mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+            if (pp.next_mov_b4_jmp != 0){
+                pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
+                TestCase ts = fuzz_one(pintool_args, pp);
+                ts.mut_type = mut_type;
+                mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+            }
         }
         break;
     default:
