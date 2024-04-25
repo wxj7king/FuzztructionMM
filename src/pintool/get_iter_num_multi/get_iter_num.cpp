@@ -16,67 +16,79 @@ using std::hex;
 
 /// assume that typical pointer uses 6 bytes
 #define IsPointer(x) ((((uintptr_t)(x)) & ~0xffffffffff) != 0)
-static std::vector<ADDRINT> insts;
 static std::set<std::string> lib_blacklist;
-static UINT64 icount = 0;
-static UINT64 pcount = 0;
+static std::map<ADDRINT, UINT32> ins2icounts;
+static std::map<ADDRINT, UINT32> ins2pcounts;
+static std::map<ADDRINT, UINT8*> ins2buf;
+static std::vector<ADDRINT> insts;
+static std::map<ADDRINT, std::string> ins_insstr;
 
 KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify addrs of instructions");
 KNOB<std::string> KnobCheckPtr(KNOB_MODE_WRITEONCE, "pintool", "p", "0", "specify whether to check if it's possibly a pointer");
 KNOB<std::string> KnobOutput(KNOB_MODE_WRITEONCE, "pintool", "o", "get_iter_output", "specify the output file path");
-static UINT64 addr = 0;
-static int flag = 0;
-static UINT8 *read_buf = NULL;
+
 static std::ofstream OutFile;
 
-//VOID Ins_counter(){
-inline VOID PIN_FAST_ANALYSIS_CALL Ins_counter(){
-    /// do not know why only when printing smth, the icount could be correct
-    icount++;
-    printf("dummy print\t");
+BOOL IsValidReg(REG reg){
+    return (REG_is_xmm(reg) || REG_is_gr8(reg) || REG_is_gr16(reg) || REG_is_gr32(reg) || REG_is_gr64(reg) || REG_is_gr(reg));
 }
 
-VOID ReadRegVal(REG reg, CONTEXT *ctx){
-    PIN_GetContextRegval(ctx, reg, read_buf);
-    uintptr_t val = *((uintptr_t *)read_buf);
+BOOL IsValidMovIns(INS ins){
+    // xed_iclass_enum_t ins_opcode = (xed_iclass_enum_t)INS_Opcode(ins);
+    std::string opcode_str = INS_Mnemonic(ins);
+    return opcode_str.find("MOV") != std::string::npos;
+}
+
+VOID ReadRegVal(ADDRINT off, REG reg, CONTEXT *ctx){
+    PIN_GetContextRegval(ctx, reg, ins2buf[off]);
     //printf("%p\n", (void *)val);
-    if (IsPointer(val)) pcount++;
+    if (IsPointer(ins2buf[off])) ins2pcounts[off]++;
     //PIN_SetContextRegval(ctx, reg, read_buf);
-    icount++;
+    ins2icounts[off]++;
     printf("dummy print\t");
 }
 
 VOID InstrumentIns(INS ins, ADDRINT baseAddr)
 {   
     ADDRINT offset = INS_Address(ins) - baseAddr;
-    if (offset == addr) flag = 1;
-    else return;
+    if (std::find(insts.begin(), insts.end(), offset) != insts.end()) return; //FIXME ? Why there could be multiple instrument?
 
-    if (KnobCheckPtr.Value() == "1"){
-        REG reg2read = REG_INVALID();
-        REGSET regsetIn, regsetOut;
-        UINT32 reg_size = 0;
+    REG reg2read = REG_INVALID();
+    REGSET regsetIn, regsetOut;
+    bool found = false;
+
+    if (IsValidMovIns(ins)){
         if (INS_IsMemoryRead(ins)){
+            if (!INS_OperandIsReg(ins, 0)) return;
             reg2read = INS_OperandReg(ins, 0);
+            found = true;
         }
         if (INS_IsMemoryWrite(ins)){
+            if (!INS_OperandIsReg(ins, 1)) return;
             reg2read = INS_OperandReg(ins, 1);
+            found = true;
         }
-        reg_size = REG_Size(reg2read);
-        ASSERT(reg_size == 8, "reg size invalid");
-        read_buf = (UINT8 *)calloc(8, 1);
+        if (!IsValidReg(reg2read) || !found) return;
+
         REGSET_Insert(regsetIn, reg2read);
         REGSET_Insert(regsetIn, REG_FullRegName(reg2read));
         REGSET_Insert(regsetOut, reg2read);
         REGSET_Insert(regsetOut, REG_FullRegName(reg2read));
         INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR)ReadRegVal,
+                        IARG_ADDRINT, offset,
                         IARG_UINT32, reg2read,
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
     }else{
-        INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR) Ins_counter, IARG_FAST_ANALYSIS_CALL , IARG_END);
-        //INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR) Ins_counter, IARG_END);
+        return;
     }
+    
+    insts.push_back(offset); 
+    ins_insstr[offset] = INS_Disassemble(ins);
+    ins2buf[offset] = (UINT8 *)calloc(1, REG_Size(reg2read));
+    ins2icounts[offset] = 0;
+    ins2pcounts[offset] = 0;
+    std::cout << ins_insstr[offset] << std::endl;
     
 }
 
@@ -91,7 +103,6 @@ const char* StripPath(const char* path)
 
 // XXX: cannot use routine because the changed register value will not be saved
 VOID InstrumentTrace(TRACE trace, VOID *v){
-    if (flag == 1) return;
     ADDRINT baseAddr = 0;
     std::string img_name;
     IMG img = IMG_FindByAddress(TRACE_Address(trace));
@@ -109,7 +120,10 @@ VOID InstrumentTrace(TRACE trace, VOID *v){
 VOID Fini(INT32 code, void *v){
     if (OutFile.is_open()){
         OutFile.setf(std::ios::showbase);
-        OutFile << (void *)addr << "," << icount << "," << pcount;
+        for (const auto& addr : insts){
+            //OutFile << (void *)addr << "," << ins_regsize[addr] << std::endl;
+            OutFile << ins_insstr[addr] << "@" <<(void *)addr << "," << ins2icounts[addr] << "," << ins2pcounts[addr] << std::endl;
+        }
     }
     OutFile.close();
     //printf("\n%p,%ld,%ld\n", (void *)addr, icount, pcount);
@@ -126,7 +140,6 @@ VOID Init(){
     lib_blacklist.insert("ld-linux-x86-64.so.2");
     lib_blacklist.insert("[vdso]");
     lib_blacklist.insert("libc.so.6");
-    addr = Uint64FromString(KnobNewAddr.Value());
     OutFile.open(KnobOutput.Value().c_str());
     //printf("%lu\n", addr);
     return;

@@ -57,7 +57,9 @@ typedef struct my_mutator {
 #define MQNAME "/FTMM_MQ"
 #define POSIX_SHM_NAME "FTMM_AFL_SHM"
 
-static const char *mut_types[] = {"byte_flip", "bit_flip", "rand_byte", "rand_byte0", "u8add", "inject_val", "combine", "havoc"};
+static const char *mut_types[] = {"byte_flip", "bit_flip", "rand_byte", "rand_byte0", "u8add", "havoc",
+                                  "byte_flip_multi", "bit_flip_multi", "rand_byte_multi", "rand_byte0_multi", "u8add_multi", "havoc_multi"
+                                  };
 extern "C" {
 
 my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {

@@ -11,11 +11,9 @@ public:
     static inline Patchpointslock source_pps;
     static inline Patchpointslock source_unfuzzed_pps;
     static inline Addr2iter addr2iter;
-    static inline Interestpp2masks addr2masks_global;
     static inline PpsSetLock interest_pps;
     static inline std::mutex log_mtx;
     static inline SourcePids source_pids;
-    static inline ShmPara shm;
     static inline PosixShmPara posix_shm;
     static inline std::string ftmm_dir;
     static inline struct mq_attr my_mqattr;
@@ -26,26 +24,21 @@ public:
     static inline size_t num_thread;
     static inline size_t source_timeout;
     static inline BinConfig source_config;
-    static inline InsToDisas ins2disas;
+    static inline int schedule_mode;
 
     // func
-    Worker(int _id, int _level);
+    Worker(int _id);
     ~Worker();
 
     static std::string sha256(const std::string &file_path);
     static void output_log(const std::string& msg);
-    static size_t get_iter(std::string out_dir, std::string addr_str);
+    static size_t get_iter(std::string out_dir, std::string addr_str, bool check_ptr, bool &is_pointer);
 
     void generate_testcases();
+    bool pp_valid_check(Patchpoint &pp);
     TestCase fuzz_one(PintoolArgs& pintool_args, Patchpoint &pp);
-    void mutations_1(Patchpoint &pp, int mut_type);
-    void mutations_2(Patchpoint &pp, int mut_type, size_t max_steps);
-    void bit_flip(PintoolArgs& pintool_args, Patchpoint& pp);
-    void byte_flip(PintoolArgs& pintool_args, Patchpoint& pp);
-    void random_byte(PintoolArgs& pintool_args, Patchpoint& pp, int rand_type);
-    void u8add(PintoolArgs& pintool_args, Patchpoint& pp);
-    void combine(PintoolArgs& pintool_args, Patchpoint& pp);
-    void havoc(PintoolArgs& pintool_args, Patchpoint& pp);
+    void mutations_one(Patchpoint &pp, int mut_type);
+    void mutations_multi(Patchpoints &pps, int mut_type);
     void fuzz_candidates_1();
     void fuzz_candidates_2();
     void save_interest_pps();
@@ -63,9 +56,6 @@ private:
     StringSet afl_files;
     /// hashes of files in 'afl_files' 
     StringSet afl_files_hashes;
-    /// temp map for saving masks of a patch point
-    Pp2masks addr2masks;
-    Masks *masks_ptr;
 
 };
 

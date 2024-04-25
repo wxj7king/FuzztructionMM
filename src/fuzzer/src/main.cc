@@ -23,14 +23,13 @@ static pid_t afl_pid;
 static pid_t worker_pid;
 static std::vector<pthread_t> threads;
 static std::vector<ThreadArg> targs;
-static ShmPara shm;
 static PosixShmPara posix_shm;
 static const std::string ftmm_dir = "/tmp/ftmm_workdir";
 static const std::string log_dir = "/tmp/ftmm_workdir/ftm_log";
 static std::set<std::string> delete_white_list;
 
 /// configurable parameters
-static int mut_level = 2;
+static int schedule_mode = 1;
 static size_t max_random_steps = 32;
 static size_t max_num_one_mut = 1024;
 static size_t num_thread = 1;
@@ -83,9 +82,7 @@ static void at_exit(){
         }
     }
 
-    // destroy shared memory and shared queue
-    shmdt(shm.shm_base_ptr);
-    shmctl(shm.shm_id, IPC_RMID, NULL);
+    // destroy shared memory and message queue
     mq_unlink(MQNAME);
     munmap(posix_shm.shm_base_ptr, posix_shm.size_in_bytes);
     shm_unlink(POSIX_SHM_NAME);
@@ -124,7 +121,7 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
     //printf("cmd: %s\n", cmd.c_str());
     if (system(cmd.c_str()) != 0) return false;
 
-    // hijack!
+    /// FIXIT:hijack!
     //std::ifstream file(find_ins_out);
 
     std::ifstream file("./output");
@@ -178,9 +175,7 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
         }
         // 0 or addr
         pp.next_mov_b4_jmp = found_mov_b4_jmp_addr;
-        Worker::ins2disas[pp.addr] = disas;
         //printf("%s, %p, %u, %p\n", disas.c_str(), (void *)pp.addr, pp.reg_size, (void *)pp.next_mov_b4_jmp);
-
         patch_points.pps.push_back(pp);
     }
     
@@ -193,7 +188,7 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
 
 void *thread_worker(void* arg){
     ThreadArg *targ = (ThreadArg *)arg;
-    Worker worker(targ->tid, mut_level);
+    Worker worker(targ->tid);
     worker.start();
     return nullptr;
 }
@@ -245,6 +240,7 @@ static bool init(){
     Worker::new_selection_config.interest_num = 10;
     Worker::new_selection_config.unfuzzed_num = 20;
     Worker::new_selection_config.random_num = 10;
+    Worker::schedule_mode = schedule_mode;
 
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
@@ -273,43 +269,6 @@ static bool init(){
         return false;
     }
     mq_close(tmp_mqd);
-
-    // initialize shared memory
-    shm.size_in_bytes = num_thread * sizeof(Masks);
-    shm.key = ftok(SHM_NAME, 'A');
-    shm.shm_id = shmget(shm.key, shm.size_in_bytes, IPC_CREAT | IPC_EXCL | 0666);
-    if (shm.shm_id == -1){
-        if (errno == EEXIST) {
-            std::cout << "shared memory exists\n";
-            std::cout << "recreate it\n";
-            int tmp_id = shmget(shm.key, 0, 0);
-            if (tmp_id == -1) {
-                std::cerr << "shm_get failed again\n";
-                return false;
-            }
-            if (shmctl(tmp_id, IPC_RMID, NULL) == -1){
-                std::cerr << "delete failed";
-                return false;
-            }
-            shm.shm_id = shmget(shm.key, shm.size_in_bytes, IPC_CREAT | IPC_EXCL | 0666);
-            if (shm.shm_id == -1){
-                std::cerr << "recreate failed\n";
-                return false;
-            }
-            std::cout << "recreate success\n";
-        }
-        else {
-            std::cerr << "shared memory get failed\n";
-            return false;
-        }
-    }
-    shm.shm_base_ptr = (unsigned char *)shmat(shm.shm_id, NULL, 0);
-    if (shm.shm_base_ptr == (void *)-1){
-        std::cerr << "shmat() failed!\n";
-        return false;
-    }
-    printf("shared memory created successfully! Size: %ld Bytes\n", shm.size_in_bytes);
-    Worker::shm = shm;
 
     // initialize shared memory between afl++
     shm_unlink(POSIX_SHM_NAME);
@@ -346,9 +305,6 @@ static void reap_resources(){
             }
         }
     }
-
-    shmdt(shm.shm_base_ptr);
-    shmctl(shm.shm_id, IPC_RMID, NULL);
     mq_unlink(MQNAME);
     munmap(posix_shm.shm_base_ptr, posix_shm.size_in_bytes);
     shm_unlink(POSIX_SHM_NAME);
@@ -393,13 +349,13 @@ static void usage(){
     const char* table = 
         "fuzzer [options]"
         "\nNote: \'-f\' option is mandatory!"
-        "\n  -f config_file    config file of parameters of source and sink binary"
+        "\n  -f path           config file of parameters of source and sink binary"
         "\n  -r num            maxmium steps for random mutation (default: 32)"
         "\n  -n num_thread     number of threads (default: 1)"
         "\n  -T seconds        fuzzer terminates after this time period (default: forever)"
         "\n  -t seconds        timeout for each run of mutated source binary (default: 3s)"
         "\n  -m num            maximum number of test cases one mutation can produce (default: 1024)"
-        "\n  -l mut_level      mutation level, 1 or 2, more fine-grained more higher (default: 2)"
+        "\n  -l 1/2            fast mode: 1, fine-grained mode: 2 (default: 1)"
         "\n  -a                use mutations of AFL++ (default: false)"
         "\n  -h help           show help\n"
         ;
@@ -420,7 +376,7 @@ static void print_params(){
         "\n  -a %d\n"
         ;
     
-    printf(params, config_path.c_str(), max_random_steps, num_thread, fuzzer_timeout, source_timeout, max_num_one_mut, mut_level, with_afl);
+    printf(params, config_path.c_str(), max_random_steps, num_thread, fuzzer_timeout, source_timeout, max_num_one_mut, schedule_mode, with_afl);
 }
 
 
@@ -483,9 +439,9 @@ int main(int argc, char **argv){
                 break;
 
             case 'l':
-                mut_level = atoi(optarg);
-                if (mut_level != 1 && mut_level != 2){
-                    fprintf(stderr, "Invalid value of mutation level: %s\n", optarg);
+                schedule_mode = atoi(optarg);
+                if (schedule_mode != 1 && schedule_mode != 2){
+                    fprintf(stderr, "Invalid value of mutation schedule mode: %s\n", optarg);
                     show_help = 1;
                 }
                 break;

@@ -97,22 +97,6 @@ VOID InstrumentTrace(TRACE trace, VOID *v){
         }
     }
 
-    // RTN rtn = TRACE_Rtn(trace);
-    // std::string img_name;
-    // if (RTN_Valid(rtn)){
-    //     IMG img = SEC_Img(RTN_Sec(rtn));
-    //     img_name = StripPath(IMG_Name(img).c_str());
-    //     if (lib_blacklist.find(img_name) != lib_blacklist.end()) return;
-    //     baseAddr = IMG_LowAddress(img);
-    // }
-    // else return;
-    // // printf("img: %s, baseaddr: 0x%lx\n", img_name.c_str(), baseAddr);
-
-    // for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
-    //     for(INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)){
-    //         InstrumentIns(ins, baseAddr);
-    //     }
-    // }
 }
 
 // VOID FindImgs(IMG img, VOID *v){

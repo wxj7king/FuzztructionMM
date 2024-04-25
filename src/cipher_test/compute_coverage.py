@@ -2,8 +2,9 @@
 import os
 import subprocess
 
-#test_case_dir = "/home/proj/proj/src/cipher_test/output/default/queue/"
-test_case_dir = "/home/proj/proj/src/cipher_test/rsa_keys/"
+test_case_dir = "/home/proj/proj/test/afl_test1/output/default/queue/"
+#test_case_dir = "/home/proj/proj/test/interesting_out/output_april_2/default/queue/"
+#test_case_dir = "/home/proj/proj/src/cipher_test/rsa_keys/"
 drcov_bin_path = "/home/proj/proj/tools/DynamoRIO-Linux-9.93.19580/bin64/drrun"
 drcov_log_dir = "/tmp/drcov/"
 target_path = "/home/proj/proj/uninstrumented/openssl/apps/openssl"

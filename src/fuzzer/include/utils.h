@@ -8,19 +8,12 @@
 #include <stdint.h>
 
 #define MQNAME "/FTMM_MQ"
-#define SHM_NAME "/FTMM_SHM"
 #define POSIX_SHM_NAME "FTMM_AFL_SHM"
 #define MAX_FILE_SIZE 1024 * 1024
 #define MAX_REG_SIZE 16
 #define HAVOC_FUSION_STEPS 16
 #define MAX_HAVOC_STEPS 8
-#define MAX_ITERATION 1024
-
-/// TODO: make configurable
-// #define MAX_RANDOM_STEPS 32
-// #define MAX_NUM_ONE_MUT 1024
-// #define NUM_THREAD 8
-// #define SOURCE_TIMEOUT 3
+#define MAX_ITERATION 512
 
 /// defined types
 typedef struct patch_point{
@@ -44,22 +37,9 @@ typedef struct pps2fuzz{
 typedef std::map<std::string, Patchpoint> Hash2pp;
 typedef std::set<std::string> StringSet;
 typedef std::map<std::string, std::string> PintoolArgs;
-typedef std::map<uint64_t, std::string> InsToDisas;
 typedef struct thread_arg{
     int tid;
 }ThreadArg;
-typedef struct masks{
-    uint64_t num_iter;
-    uint64_t addr;
-    uint64_t cur_iter;
-    unsigned char masks[(MAX_ITERATION + 1) * MAX_REG_SIZE];
-}Masks;
-typedef struct shm_para{
-    key_t key;
-    int shm_id;
-    unsigned char *shm_base_ptr;
-    size_t size_in_bytes;
-}ShmPara;
 typedef struct posix_shm_para{
     int shmfd;
     unsigned char *shm_base_ptr;
@@ -71,15 +51,10 @@ typedef struct pps_lock{
 }Patchpointslock;
 typedef struct addr2iter{
     std::map<uint64_t, uint64_t> map;
+    std::map<uint64_t, bool> chk_ptr_map;
     std::mutex mutex;
 }Addr2iter;
-typedef struct interestpp2masks{
-    std::map< uint64_t, std::vector<Masks> > map;
-    std::mutex mutex;
-}Interestpp2masks;
 
-/// the second item of the pair is a map from a hash to a mask
-typedef std::map < uint64_t, std::map<std::string, Masks> > Pp2masks;
 
 inline auto pps_compare = [](const Patchpoint a, const Patchpoint b){ return a.addr < b.addr; };
 typedef struct pps_set_lock {

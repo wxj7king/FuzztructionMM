@@ -16,68 +16,65 @@ using std::hex;
 
 //static int injected = 0;
 enum MUTATION_TYPE{
-    BYTE_FLIP = 0,
-    BIT_FLIP,
-    RANDOM_BYTE,
-    RANDOM_BYTE0,
-    U8ADD,
-    INJECT_VAL,
-    COMBINE,
-    HAVOC
+    BYTE_FLIP_MULTI = 6,
+    BIT_FLIP_MULTI,
+    RANDOM_BYTE_MULTI,
+    RANDOM_BYTE0_MULTI,
+    U8ADD_MULTI,
+    HAVOC_MULTI
 };
-#define RANDOM_MAX_STEPS 1024
+
 typedef struct patch_point{
     ADDRINT addr;
     UINT64 mut_type;
+    UINT8 u8_adder;
+    UINT64 off;
+    UINT8 *reg_buf;
 } Patchpoint;
 typedef std::vector<Patchpoint> Patchpoints;
 std::set<std::string> lib_blacklist;
 Patchpoints patch_points;
+Patchpoints patch_points_uninst;
 static BOOL detach_flag = false;
-static UINT32 *flip_idxes = NULL;
-static UINT32 *u8_adder = NULL;
 static int current_pps = 0;
 std::random_device rd;
 std::mt19937 gen(rd()); // Mersenne Twister engine
 std::uniform_int_distribution<UINT8> dist_byte;
 std::uniform_int_distribution<UINT8> dist_idx;
-std::uniform_int_distribution<UINT8> dist_mut(0, 4);
-static int interest_val[] = {0, 1, 2};
+std::uniform_int_distribution<UINT8> dist_mut(0, 5);
+static int interest_val[] = {0, 1, 0x80};
+static UINT8 havoc_count = 0;
 
 KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify addrs of instructions");
 KNOB<std::string> KnobNewMut(KNOB_MODE_WRITEONCE, "pintool", "mut", "1", "specify mutation types");
+KNOB<std::string> KnobNewOffset(KNOB_MODE_WRITEONCE, "pintool", "off", "0", "index of byte or bit in the register");
+KNOB<std::string> KnobNewU8Adder(KNOB_MODE_WRITEONCE, "pintool", "u8", "0", "value of uint8_t added to a byte in a register");
 
 VOID ByteFlip(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 cur_pps, CONTEXT *ctx){
-    if (flip_idxes[cur_pps] >= reg_size) flip_idxes[cur_pps] = 0;
-    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    if (patch_points[cur_pps].off >= reg_size) return;
+    UINT8 *reg_val = patch_points[cur_pps].reg_buf;
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("byte flip: instruction@0x%lx, register %s, original value=%ld, cur_pps: %d ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val, cur_pps);
     // flip byte
-    reg_val[flip_idxes[cur_pps]] ^= 0xff;
-    flip_idxes[cur_pps]++;
+    reg_val[patch_points[cur_pps].off] ^= 0xff;
     //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
-    free(reg_val);
     return;
 }
 
 VOID BitFlip(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 cur_pps, CONTEXT *ctx){
-    if (flip_idxes[cur_pps] >= reg_size * 8) flip_idxes[cur_pps] = 0;
-    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    if (patch_points[cur_pps].off >= reg_size * 8) return;
+    UINT8 *reg_val = patch_points[cur_pps].reg_buf;
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("bit flip: instruction@0x%lx, register %s, original value=%ld cur_pps: %d", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val, cur_pps);
     // flip bit
-    reg_val[flip_idxes[cur_pps] / 8] ^= 1 << (flip_idxes[cur_pps] % 8);
-    flip_idxes[cur_pps]++;
+    reg_val[patch_points[cur_pps].off / 8] ^= 1 << (patch_points[cur_pps].off % 8);
     //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
-    free(reg_val);
     return;
 }
 VOID RandomByte(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 cur_pps, CONTEXT *ctx){
-    // use flip_idxes[cur_pps] as the number of current steps
-    if (flip_idxes[cur_pps] >= RANDOM_MAX_STEPS) return;
-    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    UINT8 *reg_val = patch_points[cur_pps].reg_buf;
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("random byte: instruction@0x%lx, register %s, original value=%ld, cur_pps: %d ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val, cur_pps);
     // random byte at random index
@@ -85,65 +82,42 @@ VOID RandomByte(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 cur_pps, CONTEXT *c
     // UINT8 random_val = dist_byte(gen);
     // reg_val[random_idx] = random_val;
     reg_val[dist_idx(gen) % reg_size] = dist_byte(gen);
-    flip_idxes[cur_pps]++;
     //printf("random idx: %d, random byte: %d, mutated value of register is %ld\n", random_idx, random_val, *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
-    free(reg_val);
     return;
 }
 
 VOID RandomByte0(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 cur_pps, CONTEXT *ctx){
-    // use flip_idxes[cur_pps] as the number of current steps
-    if (flip_idxes[cur_pps] >= RANDOM_MAX_STEPS) return;
-    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    UINT8 *reg_val = patch_points[cur_pps].reg_buf;
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("random byte0: instruction@0x%lx, register %s, original value=%ld, cur_pps: %d ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val, cur_pps);
     // random byte at 0th byte
     reg_val[0] = dist_byte(gen);
-    flip_idxes[cur_pps]++;
     //printf("at idx 0, random byte: %d, mutated value of register is %ld\n", reg_val[0], *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
-    free(reg_val);
     return;
 }
 
 VOID U8Add(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 cur_pps, CONTEXT *ctx){
-    if (flip_idxes[cur_pps] >= reg_size) flip_idxes[cur_pps] = 0;
-    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    if (patch_points[cur_pps].off >= reg_size) return;
+    UINT8 *reg_val = patch_points[cur_pps].reg_buf;
     PIN_GetContextRegval(ctx, reg, reg_val);
     //printf("u8 adder: instruction@0x%lx, register %s, original value=%ld, cur_pps: %d ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val, cur_pps);
     // xor with uint8 value
-    reg_val[flip_idxes[cur_pps]] ^= (u8_adder[cur_pps]);
-    u8_adder[cur_pps]++;
-    if (u8_adder[cur_pps] % 256 == 0){
-        // next byte
-        u8_adder[cur_pps] = 0;
-        flip_idxes[cur_pps]++;
-    }
+    reg_val[patch_points[cur_pps].off] ^= patch_points[cur_pps].u8_adder;
     //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
-    free(reg_val);
-    return;
-}
-
-VOID InjectVal(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
-    UINT8 *reg_val = (UINT8 *)calloc(1, reg_size);
-    reg_val[0] = interest_val[dist_byte(gen) % 3];
-    //printf("inject value: instruction@0x%lx, inject value of register %s with %ld\n", Ip, REG_StringShort(reg).c_str(), injectValue);
-    PIN_SetContextRegval(ctx, reg, reg_val);
-    free(reg_val);
     return;
 }
 
 VOID Havoc(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 cur_pps, CONTEXT *ctx){
-    // use flip_idxes[cur_pps] as the number of current steps
-    if (flip_idxes[cur_pps] >= RANDOM_MAX_STEPS) return;
-    UINT8 *reg_val = (UINT8 *)malloc(reg_size);
+    if (havoc_count > 4) return;
+    UINT8 *reg_val = patch_points[cur_pps].reg_buf;
     PIN_GetContextRegval(ctx, reg, reg_val);
-    //printf("combine: instruction@0x%lx, register %s, original value=%ld, cur_pps: %d ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val, cur_pps);
+    //printf("havoc: instruction@0x%lx, register %s, original value=%ld, cur_pps: %d ", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val, cur_pps);
     // randomly select a mutation
     UINT8 mut = dist_mut(gen);
-    if (mut == 0){
+    if (mut == 0){// random byte flip
         reg_val[dist_idx(gen) % reg_size] ^= 0xff;
     }else if (mut == 1){
         UINT8 rand_idx = dist_idx(gen) % (reg_size * 8);
@@ -156,10 +130,9 @@ VOID Havoc(ADDRINT Ip, REG reg, UINT32 reg_size, UINT32 cur_pps, CONTEXT *ctx){
         reg_val[0] = interest_val[dist_byte(gen) % 3];
         for (size_t i = 1; i < reg_size; i++) reg_val[i] = 0;
     }
-    flip_idxes[cur_pps]++;
+    if (mut != 5) havoc_count++;
     //printf("mut: %d, mutated value of register is %ld\n", mut, *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
-    free(reg_val);
     return;
 }
 
@@ -168,11 +141,11 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
     //xed_iclass_enum_t ins_opcode = (xed_iclass_enum_t)INS_Opcode(ins);
     //printf("instruction@%p: %s\n", (void *)INS_Address(ins), INS_Disassemble(ins).c_str());
     ADDRINT addr_offset = (INS_Address(ins) - baseAddr);
-    auto it = std::find_if(patch_points.begin(), patch_points.end(), [=](const Patchpoint& pp){return pp.addr == addr_offset;});
-    if (it == patch_points.end()) return;
+    auto it = std::find_if(patch_points_uninst.begin(), patch_points_uninst.end(), [=](const Patchpoint& pp){return pp.addr == addr_offset;});
+    if (it == patch_points_uninst.end()) return;
     Patchpoint pp = *it;
-    patch_points.erase(it);
-    if (patch_points.empty()) detach_flag = true;
+    patch_points_uninst.erase(it);
+    if (patch_points_uninst.empty()) detach_flag = true;
 
     printf("instruction@%p, mutation type: %ld, end flag=%d\n", (void *)pp.addr, pp.mut_type, detach_flag);
     //AFUNPTR mut_func = NULL;
@@ -200,10 +173,11 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
     REGSET_Insert(regsetOut, reg2mut);
     REGSET_Insert(regsetOut, REG_FullRegName(reg2mut));
     reg_size = REG_Size(reg2mut);
+    patch_points[current_pps].reg_buf = (UINT8 *)calloc(reg_size, 1);
 
     switch (pp.mut_type)
     {
-        case BYTE_FLIP:
+        case BYTE_FLIP_MULTI:
             INS_InsertCall(ins, ipoint, (AFUNPTR)ByteFlip,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
@@ -212,7 +186,7 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
             break;
-        case BIT_FLIP:
+        case BIT_FLIP_MULTI:
             INS_InsertCall(ins, ipoint, (AFUNPTR)BitFlip,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
@@ -221,7 +195,7 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
             break;
-        case RANDOM_BYTE:
+        case RANDOM_BYTE_MULTI:
             INS_InsertCall(ins, ipoint, (AFUNPTR)RandomByte,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
@@ -230,15 +204,7 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
             break;
-        case INJECT_VAL:
-            INS_InsertCall(ins, ipoint, (AFUNPTR)InjectVal,
-                        IARG_INST_PTR,// application IP
-                        IARG_UINT32, reg2mut,
-                        IARG_UINT32, reg_size,
-                        IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
-                        IARG_END);
-            break;
-        case U8ADD:
+        case U8ADD_MULTI:
             INS_InsertCall(ins, ipoint, (AFUNPTR)U8Add,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
@@ -247,7 +213,7 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
             break;
-        case RANDOM_BYTE0:
+        case RANDOM_BYTE0_MULTI:
             INS_InsertCall(ins, ipoint, (AFUNPTR)RandomByte0,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
@@ -256,7 +222,7 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
             break;
-        case HAVOC:
+        case HAVOC_MULTI:
             INS_InsertCall(ins, ipoint, (AFUNPTR)Havoc,
                         IARG_INST_PTR,// application IP
                         IARG_UINT32, reg2mut,
@@ -286,33 +252,28 @@ const char* StripPath(const char* path)
 VOID InstrumentTrace(TRACE trace, VOID *v){
     if (detach_flag) return;
     ADDRINT baseAddr = 0;
-    RTN rtn = TRACE_Rtn(trace);
     std::string img_name;
-    if (RTN_Valid(rtn)){
-        IMG img = SEC_Img(RTN_Sec(rtn));
-        img_name = StripPath(IMG_Name(img).c_str());
-        if (lib_blacklist.find(img_name) != lib_blacklist.end()) return;
-        baseAddr = IMG_LowAddress(img);
-    }
-    else return;
-    //printf("In %s\n", img_name.c_str());
-
+    IMG img = IMG_FindByAddress(TRACE_Address(trace));
+    if (!IMG_Valid(img)) return;
+    img_name = StripPath(IMG_Name(img).c_str());
+    if (lib_blacklist.find(img_name) != lib_blacklist.end()) return;
+    baseAddr = IMG_LowAddress(img);
     for (BBL bbl = TRACE_BblHead(trace); BBL_Valid(bbl); bbl = BBL_Next(bbl)) {
         for(INS ins = BBL_InsHead(bbl); INS_Valid(ins); ins = INS_Next(ins)){
             InstrumentIns(ins, baseAddr);
         }
-
     }
 }
-
-void Detatched(VOID *v){std::cerr << endl << "Detached from pintool!" << endl;}
 
 void Fini(INT32 code, void *v){
 	// printf("read counts: %ld\n", read_count);
     // printf("write counts: %ld\n", write_count);
 	// printf("read number of insts: %ld\n", instmap.size());
-    free(flip_idxes);
-    free(u8_adder);
+    for (size_t i = 0; i < patch_points.size(); i++)
+    {
+        free(patch_points[i].reg_buf);
+    }
+
     return;
 }
 
@@ -345,22 +306,23 @@ BOOL Init(){
     lib_blacklist.insert("[vdso]");
     lib_blacklist.insert("libc.so.6");
 
-    std::vector<std::string> args1 = get_tokens(KnobNewAddr.Value(), ",");
-    std::vector<std::string> args2 = get_tokens(KnobNewMut.Value(), ",");
+    std::vector<std::string> addrs = get_tokens(KnobNewAddr.Value(), ",");
+    std::vector<std::string> muts = get_tokens(KnobNewMut.Value(), ",");
+    std::vector<std::string> offs = get_tokens(KnobNewOffset.Value(), ",");
+    std::vector<std::string> u8s = get_tokens(KnobNewU8Adder.Value(), ",");
 
-    if (args1.size() != args2.size()) return false;
+    if (addrs.size() != muts.size() || muts.size() != offs.size() || offs.size() != u8s.size()) return false;
 
-    for (size_t i = 0; i < args1.size(); i ++){
+    for (size_t i = 0; i < addrs.size(); i ++){
         Patchpoint pp;
-        pp.addr = Uint64FromString(args1[i]);
-        pp.mut_type = Uint64FromString(args2[i]);
+        pp.addr = Uint64FromString(addrs[i]);
+        pp.mut_type = std::stoul(muts[i]);
+        pp.off = std::stoul(offs[i]);
+        pp.u8_adder = std::stoul(u8s[i]);
         patch_points.push_back(pp);
-        std::cout << "pp: " << pp.addr << "," << pp.mut_type << "," << std::endl;
+        std::cout << "pp: " << pp.addr << "," << pp.mut_type << "," << pp.off << "," <<  pp.u8_adder <<  std::endl;
     }
-
-    flip_idxes = (UINT32 *)calloc(args1.size(), sizeof(UINT32));
-    u8_adder = (UINT32 *)calloc(args1.size(), sizeof(UINT32));
-
+    patch_points_uninst = patch_points;
     return true;
 }
 
@@ -369,10 +331,8 @@ int main(INT32 argc, CHAR* argv[])
     if (PIN_Init(argc, argv)) return Usage();
     if (!Init()) return Usage();
     //PIN_SetSyntaxATT();
-    //INS_AddInstrumentFunction(InstrumentIns, 0);
     TRACE_AddInstrumentFunction(InstrumentTrace, 0);
     PIN_AddFiniFunction(Fini, 0);
-    PIN_AddDetachFunction(Detatched, 0);
     PIN_StartProgram();
     return 0;
 }
