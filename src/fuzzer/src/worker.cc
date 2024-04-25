@@ -31,7 +31,6 @@ enum MUTATION_TYPE{
 };
 
 Worker::Worker(int _id) : id(_id) { 
-
     cur_mut_counter = 0;
 }
 Worker::~Worker(){}
@@ -136,7 +135,7 @@ size_t Worker::get_iter(std::string out_dir, std::string addr_str, bool check_pt
     del_idx = result.find(',');
     size_t iter_num = std::stoul(result.substr(0, del_idx));
     size_t p_count = std::stoul(result.substr(del_idx + 1, result.length()));
-    printf("%s,%p,%lu,%lu\n", result.c_str(), (void *)std::stoul(addr_str), iter_num, p_count);
+    //printf("%p,%lu,%lu\n", (void *)std::stoul(addr_str), iter_num, p_count);
     if (p_count != 0) is_pointer = true;
     else is_pointer = false;
 
@@ -145,7 +144,7 @@ size_t Worker::get_iter(std::string out_dir, std::string addr_str, bool check_pt
     return iter_num;
 }
 
-bool Worker::pp_valid_check(Patchpoint &pp){
+bool Worker::pp_valid_check(const Patchpoint &pp){
     size_t num_iter = 0;
     bool check_ptr = false, is_pointer = false;
 
@@ -157,6 +156,7 @@ bool Worker::pp_valid_check(Patchpoint &pp){
         addr2iter.map[pp.addr] = std::min(num_iter, (uint64_t)MAX_ITERATION);
         addr2iter.chk_ptr_map[pp.addr] = is_pointer;
     }
+    //printf("pp_valid_check: %p, %ld, %d\n", (void *)pp.addr, num_iter, is_pointer);
     /// hit is not 0 and the value is not a pointer
     return (addr2iter.map[pp.addr] != 0) && (addr2iter.chk_ptr_map[pp.addr] == false);
 }
@@ -217,7 +217,54 @@ void Worker::generate_testcases(){
     //printf("%s\n", oss.str().c_str());
 }
 
-TestCase Worker::fuzz_one(PintoolArgs& pintool_args, Patchpoint &pp){
+
+void Worker::generate_testcases_multi(){
+    selected_pps_multi.unfuzzed_pps.pps.clear();
+    selected_pps_multi.interest_pps.pps.clear();
+
+    std::random_device rd;
+    std::mt19937 gen(rd()); // Mersenne Twister engine
+    std::ostringstream oss;
+
+    {
+        std::lock_guard<std::mutex> lock(global_read_ptr.mtx);
+        std::uniform_int_distribution<size_t> dist(1, max_pps_one_mut);
+        size_t my_multi_pps_num = global_read_ptr.curr_multi_pps_num;
+        if (global_read_ptr.random_flag) my_multi_pps_num = dist(gen);
+        if (global_read_ptr.ptr + my_multi_pps_num - 1 >= source_pps.pps.size()){
+            my_multi_pps_num = source_pps.pps.size() - global_read_ptr.ptr;
+        }
+        for (size_t i = global_read_ptr.ptr; i < global_read_ptr.ptr + my_multi_pps_num; i++)
+        {
+            selected_pps_multi.unfuzzed_pps.pps.push_back(source_pps.pps[i]);
+        }
+        selected_pps_multi.unfuzzed_pps.original_num = my_multi_pps_num;
+        global_read_ptr.ptr += my_multi_pps_num;
+        if (global_read_ptr.ptr > source_pps.pps.size() - 1){
+            global_read_ptr.ptr = 0;
+            if (global_read_ptr.curr_multi_pps_num == max_pps_one_mut && !global_read_ptr.random_flag) global_read_ptr.random_flag = true;
+            if (!global_read_ptr.random_flag){
+                global_read_ptr.curr_multi_pps_num++;
+            }
+        }
+        
+    }
+    oss << "[*] Id: " << id << " Selected one \'" << selected_pps_multi.unfuzzed_pps.str() << "\' new pps combine, ";
+    
+    {
+        std::lock_guard<std::mutex> lock(interest_pps_multi.mutex);
+        if (interest_pps_multi.set.size() > 0){
+            std::uniform_int_distribution<size_t> dist_interest(0, interest_pps_multi.set.size() - 1);
+            selected_pps_multi.interest_pps = *std::next(interest_pps_multi.set.begin(), dist_interest(gen));
+            oss << "selected one \'" << selected_pps_multi.interest_pps.str() << "\' interesting pps combine";
+        }
+    }
+    
+    output_log(oss.str());
+    //printf("%s\n", oss.str().c_str());
+}
+
+TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
@@ -233,6 +280,7 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, Patchpoint &pp){
     source_argv.push_back("-t");
     if (level == 1) source_argv.push_back("/home/proj/proj/src/pintool/mutate_ins_one/obj-intel64/mutate_ins.so");
     else if (level == 2) source_argv.push_back("/home/proj/proj/src/pintool/mutate_ins_multi2/obj-intel64/mutate_ins.so");
+    else abort();
     for (const auto& arg : pintool_args){
         source_argv.push_back(arg.first.c_str());
         source_argv.push_back(arg.second.c_str());
@@ -275,12 +323,16 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, Patchpoint &pp){
         dup2(null_fd, STDOUT_FILENO);
         dup2(null_fd, STDERR_FILENO);
         close(null_fd);
-        // set limit to the file size of output 
+        // set limit to the file size of output to 8MB
         struct rlimit limit;
-        limit.rlim_cur = MAX_FILE_SIZE;
-        limit.rlim_max = MAX_FILE_SIZE;
-        // assert(setrlimit(RLIMIT_FSIZE, &limit) == 0);
+        limit.rlim_cur = 1024 * 1024 * 8;
+        limit.rlim_max = 1024 * 1024 * 8;
         if (setrlimit(RLIMIT_FSIZE, &limit) != 0) perror("setrlimit() failed!\n");
+        // set vitual memory limit to 1GB
+        limit.rlim_cur = 1024 * 1024 * 1024;
+        limit.rlim_max = 1024 * 1024 * 1024;
+        if (setrlimit(RLIMIT_AS, &limit) != 0) perror("setrlimit() failed!\n");
+
         // restrict output dir?
         // assert(chdir(out_dirs[id].c_str()) == 0);
         if (chdir(work_dir.c_str()) != 0) perror("chdir() failed!\n");
@@ -322,7 +374,24 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, Patchpoint &pp){
         testcase.filehash[64] = '0';
         testcase.patch_point.addr = pp.addr;
         testcase.patch_point.reg_size = pp.reg_size;
-        hash2pp[file_hash] = pp;
+        if (level == 1) {
+            hash2pp[file_hash] = pp;
+        }
+        else if (level == 2){
+            if (selected_pps_multi.interest_pps.pps.size() != 0 && pp.addr == selected_pps_multi.interest_pps.pps[0].addr){
+                hash2pps_multi[file_hash] = selected_pps_multi.interest_pps;
+                testcase.multi_num = selected_pps_multi.interest_pps.original_num;
+            }
+            else if(pp.addr == selected_pps_multi.unfuzzed_pps.pps[0].addr){
+                hash2pps_multi[file_hash] = selected_pps_multi.unfuzzed_pps;
+                testcase.multi_num = selected_pps_multi.unfuzzed_pps.original_num;
+            }
+            else
+                abort();
+            
+        }
+        else{abort();}
+        
     }
     testcase.worker_id = id;
     cur_mut_counter++;
@@ -330,7 +399,7 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, Patchpoint &pp){
     return testcase;
 }
 
-void Worker::mutations_one(Patchpoint &pp, int mut_type){
+void Worker::mutations_one(const Patchpoint &pp, int mut_type){
     PintoolArgs pintool_args;
     uint64_t num_iter = addr2iter.map[pp.addr];
     pintool_args["-addr"] = std::to_string(pp.addr);
@@ -435,7 +504,7 @@ void Worker::mutations_one(Patchpoint &pp, int mut_type){
             }
             // specified index and random byte
             
-            for (size_t i = 1; i < std::min(4, pp.reg_size); i++)
+            for (size_t i = 1; i < std::min((uint8_t)4, pp.reg_size); i++)
             {   
                 pintool_args["-off"] = std::to_string(i);
                 for (size_t j = 0; j < max_random_steps; j++)
@@ -459,7 +528,7 @@ void Worker::mutations_one(Patchpoint &pp, int mut_type){
             {
                 pintool_args["-iter2mut"] = std::to_string(iters[j]);
                 /// apply only lower two bytes
-                for (size_t i = 0; i < std::min(2, pp.reg_size); i++)
+                for (size_t i = 0; i < std::min((uint8_t)2, pp.reg_size); i++)
                 {
                     pintool_args["-off"] = std::to_string(i);
                     for (size_t j = 0; j < 256; j++)
@@ -504,9 +573,8 @@ void Worker::mutations_one(Patchpoint &pp, int mut_type){
 
 }
 
-void Worker::mutations_multi(Patchpoints &pps, int mut_type){
+void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
     PintoolArgs pintool_args;
-    uint64_t num_iter = addr2iter.map[pp.addr];
     std::string addrs_str = "", muts_off_str = "", muts_str = "", u8s_str = "";
     uint8_t max_reg_size = 0;
     for (size_t i = 0; i < pps.size(); i ++){
@@ -597,7 +665,7 @@ void Worker::mutations_multi(Patchpoints &pps, int mut_type){
 
             break;
         case U8ADD_MULTI:
-            for (size_t i = 0; i < std::min(2, max_reg_size); i++)
+            for (size_t i = 0; i < std::min((uint8_t)2, max_reg_size); i++)
             {
                 muts_off_str = "";
                 for (size_t j = 0; j < pps.size(); j ++)
@@ -650,21 +718,21 @@ void Worker::fuzz_candidates_1(){
     // unfuzzed patchpoints
     for (size_t i = 0; i < selected_pps.unfuzzed_pps.size(); i++){
         if ( !pp_valid_check(selected_pps.unfuzzed_pps[i]) ) continue;
-        //mutations_one(selected_pps.unfuzzed_pps[i], BYTE_FLIP);
-        //mutations_one(selected_pps.unfuzzed_pps[i], BIT_FLIP);
-        mutations_one(selected_pps.unfuzzed_pps[i], U8ADD);
+        mutations_one(selected_pps.unfuzzed_pps[i], BYTE_FLIP);
+        mutations_one(selected_pps.unfuzzed_pps[i], BIT_FLIP);
+        //mutations_one(selected_pps.unfuzzed_pps[i], U8ADD);
     }
     // interesting patchpoints
     for (size_t i = 0; i < selected_pps.interest_pps.size(); i++){
         mutations_one(selected_pps.interest_pps[i], RANDOM_BYTE0);
-        //mutations_one(selected_pps.interest_pps[i], RANDOM_BYTE);
+        mutations_one(selected_pps.interest_pps[i], RANDOM_BYTE);
         //mutations_one(selected_pps.interest_pps[i], HAVOC);
     }
     // random patchpoints
     for (size_t i = 0; i < selected_pps.random_pps.size(); i++){
         if ( !pp_valid_check(selected_pps.random_pps[i]) ) continue;
         mutations_one(selected_pps.random_pps[i], RANDOM_BYTE0);
-        //mutations_one(selected_pps.random_pps[i], RANDOM_BYTE);
+        mutations_one(selected_pps.random_pps[i], RANDOM_BYTE);
         //mutations_one(selected_pps.random_pps[i], HAVOC);
     }
     
@@ -672,38 +740,35 @@ void Worker::fuzz_candidates_1(){
 
 void Worker::fuzz_candidates_2(){
     // unfuzzed patchpoints
-    for (size_t i = 0; i < selected_pps.unfuzzed_pps.size(); i++){
-        //printf("mutate unfuzzed pps: %p\n", (void *)selected_pps.unfuzzed_pps[i].addr);
-        mutations_multi(selected_pps.unfuzzed_pps[i], BYTE_FLIP_MULTI);
-        //mutations_multi(selected_pps.unfuzzed_pps[i], BIT_FLIP_MULTI);
+    Patchpoints new_pps;
+    for (const auto &pp : selected_pps_multi.unfuzzed_pps.pps)
+    {
+        if (pp_valid_check(pp))
+            new_pps.push_back(pp);
+    }
+    selected_pps_multi.unfuzzed_pps.pps = new_pps;
+    if (new_pps.size() > 1){
+        mutations_multi(selected_pps_multi.unfuzzed_pps.pps, BYTE_FLIP_MULTI);
+        mutations_multi(selected_pps_multi.unfuzzed_pps.pps, BIT_FLIP_MULTI);
         //mutations_multi(selected_pps.unfuzzed_pps[i], U8ADD_MULTI);
     }
-    //printf("%d: after unfuzzed\n", id);
+    
     // interesting patchpoints
-    for (size_t i = 0; i < selected_pps.interest_pps.size(); i++){
-        //printf("mutate interest pps: %p\n", (void *)selected_pps.interest_pps[i].addr);
-        mutations_multi(selected_pps.interest_pps[i], RANDOM_BYTE0_MULTI);
-        mutations_multi(selected_pps.interest_pps[i], RANDOM_BYTE_MULTI);
-        mutations_multi(selected_pps.interest_pps[i], HAVOC_MULTI);
+    if (!selected_pps_multi.interest_pps.pps.empty()){
+        mutations_multi(selected_pps_multi.interest_pps.pps, RANDOM_BYTE0_MULTI);
+        mutations_multi(selected_pps_multi.interest_pps.pps, RANDOM_BYTE_MULTI);
+        mutations_multi(selected_pps_multi.interest_pps.pps, HAVOC_MULTI);
     }
-    //printf("%d: after interest\n", id);
-    // random patchpoints
-    for (size_t i = 0; i < selected_pps.random_pps.size(); i++){
-        //printf("mutate random pps: %p\n", (void *)selected_pps.random_pps[i].addr);
-        mutations_multi(selected_pps.random_pps[i], RANDOM_BYTE0_MULTI);
-        mutations_multi(selected_pps.random_pps[i], RANDOM_BYTE_MULTI);
-        mutations_multi(selected_pps.random_pps[i], HAVOC_MULTI);
-    }
-
+    
 }
 
 void Worker::save_interest_pps(){
     size_t *count_ptr = (size_t *)posix_shm.shm_base_ptr;
-    size_t max_wait_s = 60;
+    size_t max_wait_s = 1;
     // wait for afl++ used all testcases this worker produced
     while (count_ptr[id] != cur_mut_counter && max_wait_s > 0)
     {   
-        printf("inconsistence in %d, count in shm:%ld, count in worker%ld\n", id, count_ptr[id], cur_mut_counter);
+        printf("inconsistence in %d, count in shm:%ld, count in worker:%ld\n", id, count_ptr[id], cur_mut_counter);
         sleep(1);
         max_wait_s--;
     }
@@ -711,9 +776,10 @@ void Worker::save_interest_pps(){
     cur_mut_counter = 0;
     
     std::filesystem::path afl_output_dir = "/home/proj/proj/test/afl_test1/output/default/queue/";
-    std::string orig_file = "orig";
+    //std::string orig_file = "orig";
+    std::string new_cov_file = "+cov";
     for (const auto& file : std::filesystem::directory_iterator(afl_output_dir)){
-        if (std::filesystem::is_regular_file(file.path()) && file.path().string().find(orig_file) == std::string::npos){
+        if (std::filesystem::is_regular_file(file.path()) && file.path().string().find(new_cov_file) != std::string::npos){
             if (afl_files.find(file.path().string()) != afl_files.end()){
                 continue;
             }
@@ -725,22 +791,45 @@ void Worker::save_interest_pps(){
         }
     }
     
-    {
-        std::lock_guard<std::mutex> lock(interest_pps.mutex);
-        for (const auto& pair : hash2pp){
-            if (afl_files_hashes.find(pair.first) != afl_files_hashes.end()){
-                Patchpoint tmp_pp = pair.second;
-                //printf("find interesting pps: %s, %s\n", pair.first.c_str(), addrs_str.c_str());
-                std::ostringstream oss;
-                oss << "[*] Find interesting pp: " << pair.first.c_str() << ", " << std::to_string(tmp_pp.addr).c_str();
-                output_log(oss.str());
-                //printf("%s\n", oss.str().c_str());
-                interest_pps.set.insert(tmp_pp);
-
+    if (level == 1){
+        {
+            std::lock_guard<std::mutex> lock(interest_pps.mutex);
+            for (const auto& pair : hash2pp){
+                if (afl_files_hashes.find(pair.first) != afl_files_hashes.end()){
+                    Patchpoint tmp_pp = pair.second;
+                    //printf("find interesting pps: %s, %s\n", pair.first.c_str(), addrs_str.c_str());
+                    std::ostringstream oss;
+                    oss << "[*] Find interesting pp: " << pair.first.c_str() << ", " << std::to_string(tmp_pp.addr).c_str();
+                    output_log(oss.str());
+                    //printf("%s\n", oss.str().c_str());
+                    interest_pps.set.insert(tmp_pp);
+                }
             }
         }
+        hash2pp.clear();
     }
-    hash2pp.clear();
+    else if (level == 2){
+        {
+            std::lock_guard<std::mutex> lock(interest_pps_multi.mutex);
+            
+            for (const auto& pair : hash2pps_multi){
+                if (afl_files_hashes.find(pair.first) != afl_files_hashes.end()){
+                    //printf("find interesting pps: %s, %s\n", pair.first.c_str(), addrs_str.c_str());
+                    if (pair.second.str() == selected_pps_multi.interest_pps.str()) continue;
+                    std::ostringstream oss;
+                    oss << "[*] Find interesting pps combine: " << selected_pps_multi.unfuzzed_pps.str();
+                    output_log(oss.str());
+                    //printf("%s\n", oss.str().c_str());
+                    interest_pps_multi.set.insert(selected_pps_multi.unfuzzed_pps);
+                    break;
+                }
+            }
+        }
+        hash2pps_multi.clear();
+    }else{
+        abort();
+    }
+
 }
 
 void Worker::start(){
@@ -769,17 +858,20 @@ void Worker::start(){
     // evenly dispatch different mutation approaches
     if (id % 2 == 0) level = 1;
     else level = 2;
+    //level = 2;
 
     // main loop of worker
     while(1){
-        generate_testcases();
-        //printf("%d: after generate testcases\n", id);
-        if (level == 1) fuzz_candidates_1();
-        else if(level == 2) fuzz_candidates_2();
-        //printf("%d: after fuzz candidates\n", id);
-        save_interest_pps();
+        if (level == 1){
+            generate_testcases();
+            fuzz_candidates_1();
+            save_interest_pps();
+        }else if (level == 2){
+            generate_testcases_multi();
+            fuzz_candidates_2();
+            save_interest_pps();
+        }
         //printf("%d: after save\n", id);
-        
     }
     
     mq_close(mqd);

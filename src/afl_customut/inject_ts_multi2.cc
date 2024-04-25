@@ -33,6 +33,7 @@ typedef struct test_case{
     Patchpoint patch_point;
     int mut_type;
     int worker_id;
+    size_t multi_num;
 }TestCase;
 
 typedef struct posix_shm_para{
@@ -203,6 +204,10 @@ const char *afl_custom_describe(my_mutator_t *data, size_t max_description_len){
         strcat(ret, addr);
         strcat(ret, ",mut:");
         strcat(ret, mut_types[ts_ptr->mut_type]);
+        if (ts_ptr->mut_type >= 6){
+            strcat(ret, ",num_pps:");
+            strcat(ret, std::to_string(ts_ptr->multi_num).c_str());
+        }
         //printf("addr: %lx, mut: %d\n", ts_ptr->patch_point.addr, ts_ptr->mut_type);
     }
     return ret;

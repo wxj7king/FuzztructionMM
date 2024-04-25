@@ -9,10 +9,6 @@
 
 #define MQNAME "/FTMM_MQ"
 #define POSIX_SHM_NAME "FTMM_AFL_SHM"
-#define MAX_FILE_SIZE 1024 * 1024
-#define MAX_REG_SIZE 16
-#define HAVOC_FUSION_STEPS 16
-#define MAX_HAVOC_STEPS 8
 #define MAX_ITERATION 512
 
 /// defined types
@@ -27,6 +23,7 @@ typedef struct test_case{
     Patchpoint patch_point;
     int mut_type;
     int worker_id;
+    size_t multi_num;
 }TestCase;
 typedef std::vector<Patchpoint> Patchpoints;
 typedef struct pps2fuzz{
@@ -34,6 +31,7 @@ typedef struct pps2fuzz{
     Patchpoints interest_pps;
     Patchpoints random_pps;
 }Pps2fuzz;
+
 typedef std::map<std::string, Patchpoint> Hash2pp;
 typedef std::set<std::string> StringSet;
 typedef std::map<std::string, std::string> PintoolArgs;
@@ -55,12 +53,39 @@ typedef struct addr2iter{
     std::mutex mutex;
 }Addr2iter;
 
-
 inline auto pps_compare = [](const Patchpoint a, const Patchpoint b){ return a.addr < b.addr; };
 typedef struct pps_set_lock {
     std::set<Patchpoint, decltype(pps_compare)> set;
     std::mutex mutex;
 }PpsSetLock;
+
+typedef struct patch_points_multi{
+    Patchpoints pps;
+    size_t original_num;
+    std::string str() const {
+        std::string pps_str = "";
+        if (pps.empty()) return pps_str;
+        for (const auto &pp : pps)
+        {
+            pps_str += (std::to_string(pp.addr) + ",");
+        }
+        pps_str.pop_back();
+        return pps_str;
+    }
+}PatchpointsMulti;
+inline auto pps_compare_multi = [](const PatchpointsMulti a, const PatchpointsMulti b){ return a.str() < b.str(); };
+typedef struct pps_multi_set_lock {
+    std::set<PatchpointsMulti, decltype(pps_compare_multi)> set;
+    std::mutex mutex;
+}PpsMultiSetLock;
+
+typedef std::map<std::string, PatchpointsMulti> Hash2ppsMulti;
+
+typedef struct pps2fuzz_multi{
+    PatchpointsMulti unfuzzed_pps;
+    PatchpointsMulti interest_pps;
+}Pps2fuzzMulti;
+
 typedef struct new_selection_config{
     size_t unfuzzed_num;
     size_t interest_num;

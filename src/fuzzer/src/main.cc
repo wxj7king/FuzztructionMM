@@ -34,6 +34,7 @@ static size_t max_random_steps = 32;
 static size_t max_num_one_mut = 1024;
 static size_t num_thread = 1;
 static size_t source_timeout = 3;
+static size_t max_pps_one_mut = 30;
 /// run forever if it is zero
 static size_t fuzzer_timeout = 0;
 static bool with_afl = false;
@@ -122,9 +123,9 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
     if (system(cmd.c_str()) != 0) return false;
 
     /// FIXIT:hijack!
-    //std::ifstream file(find_ins_out);
-
-    std::ifstream file("./output");
+    //std::ifstream file("./output");
+    std::ifstream file(find_ins_out);
+    
     std::vector<std::string> lines;
     if (file.is_open()){
         std::string line;
@@ -227,6 +228,10 @@ static void child_process(){
 }
 
 static bool init(){
+
+    std::filesystem::path curr_path = std::filesystem::current_path();
+    printf("Current path: %s\n", curr_path.string().c_str());
+
     threads.resize(num_thread);
     targs.resize(num_thread);
 
@@ -234,6 +239,7 @@ static bool init(){
     Worker::max_num_one_mut = max_num_one_mut;
     Worker::num_thread = num_thread;
     Worker::source_timeout = source_timeout;
+    Worker::max_pps_one_mut = max_pps_one_mut;
 
     Worker::source_pids.assign(num_thread, -1);
     Worker::ftmm_dir = ftmm_dir;
@@ -241,6 +247,10 @@ static bool init(){
     Worker::new_selection_config.unfuzzed_num = 20;
     Worker::new_selection_config.random_num = 10;
     Worker::schedule_mode = schedule_mode;
+    Worker::global_read_ptr.ptr = 0;
+    Worker::global_read_ptr.random_flag = false;
+    /// multi pps starts from 2
+    Worker::global_read_ptr.curr_multi_pps_num = 2;
 
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
@@ -287,6 +297,8 @@ static bool init(){
         perror("shm_open() failed\n");
         return false;
     }
+    memset(posix_shm.shm_base_ptr, 0, sizeof(size_t) * num_thread);
+
     // tell afl++ the size of shared memory
     *((size_t *)posix_shm.shm_base_ptr) = sizeof(size_t) * num_thread;
     Worker::posix_shm = posix_shm;
@@ -359,7 +371,7 @@ static void usage(){
         "\n  -a                use mutations of AFL++ (default: false)"
         "\n  -h help           show help\n"
         ;
-    fprintf(stderr, "Fuzztrunction-- v0.1\n%s\n", table);
+    fprintf(stdout, "Fuzztrunction-- v0.1\n%s\n", table);
     exit(1);
 }
 

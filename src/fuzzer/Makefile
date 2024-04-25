@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -Wall -O3 -std=c++2a
+CXXFLAGS = -Wall -g -O3 -std=c++2a -fsanitize=address
 LIBS = -lssl -lcrypto
 
 MYHEADERS_H = -I.
