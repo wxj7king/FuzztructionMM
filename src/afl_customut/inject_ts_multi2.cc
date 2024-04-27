@@ -76,7 +76,7 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
     }
 
     data->my_mqattr.mq_flags = 0;
-    data->my_mqattr.mq_maxmsg = 10;
+    data->my_mqattr.mq_maxmsg = 30;
     data->my_mqattr.mq_msgsize = sizeof(TestCase);
     data->my_mqattr.mq_curmsgs = 0;
     mqd_t mqd = mq_open (MQNAME, O_RDWR,  0600, &data->my_mqattr);
@@ -101,7 +101,7 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
             return NULL;
         }
         // clear
-        *((size_t *)data->posix_shm.shm_base_ptr) = 0;
+        //*((size_t *)data->posix_shm.shm_base_ptr) = 0;
 
     }else{
         perror("shm_open() failed\n");
@@ -144,7 +144,7 @@ size_t afl_custom_fuzz(my_mutator_t *data, uint8_t *buf, size_t buf_size,
     
     TestCase *ts_ptr = (TestCase *)data->msg_buf;
     size_t *count_ptr = (size_t *)data->posix_shm.shm_base_ptr;
-    count_ptr[ts_ptr->worker_id]++;
+    count_ptr[ts_ptr->worker_id + 1]++;
 
     if (strcmp(ts_ptr->filename, "") != 0){
         data->ts_counter++;

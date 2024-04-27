@@ -2,7 +2,7 @@
 import os
 import subprocess
 
-test_case_dir = "/home/proj/proj/test/afl_test1/output/default/queue/"
+test_case_dir = "/home/proj/proj/src/fuzzer/keys/"
 #test_case_dir = "/home/proj/proj/test/interesting_out/output_april_2/default/queue/"
 #test_case_dir = "/home/proj/proj/src/cipher_test/rsa_keys/"
 drcov_bin_path = "/home/proj/proj/tools/DynamoRIO-Linux-9.93.19580/bin64/drrun"
@@ -97,6 +97,8 @@ def main():
     directory = os.fsencode(test_case_dir)
     for file in os.listdir(directory):
         filename = os.fsdecode(file)
+        #if "+cov" not in filename:
+        #    continue
         test_case_path = test_case_dir + filename
         test_case_paths.append(test_case_path)
         run_drcov(test_case_path)

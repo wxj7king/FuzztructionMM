@@ -527,27 +527,28 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
             for (size_t j = 0; j < iters.size(); j++)
             {
                 pintool_args["-iter2mut"] = std::to_string(iters[j]);
-                /// apply only lower two bytes
-                for (size_t i = 0; i < std::min((uint8_t)2, pp.reg_size); i++)
+                /// apply only the lowest byte
+                // for (size_t i = 0; i < std::min((uint8_t)2, pp.reg_size); i++)
+                // {
+                // pintool_args["-off"] = std::to_string(i);
+                pintool_args["-off"] = std::to_string(0);
+                for (size_t j = 0; j < 256; j++)
                 {
-                    pintool_args["-off"] = std::to_string(i);
-                    for (size_t j = 0; j < 256; j++)
-                    {
-                        pintool_args["-baddr"] = "0";
-                        pintool_args["-u8"] = std::to_string(j);
+                    pintool_args["-baddr"] = "0";
+                    pintool_args["-u8"] = std::to_string(j);
+                    TestCase ts = fuzz_one(pintool_args, pp);
+                    ts.mut_type = mut_type;
+                    mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+
+                    if (pp.next_mov_b4_jmp != 0){
+                        pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
                         TestCase ts = fuzz_one(pintool_args, pp);
                         ts.mut_type = mut_type;
                         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
-
-                        if (pp.next_mov_b4_jmp != 0){
-                            pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
-                            TestCase ts = fuzz_one(pintool_args, pp);
-                            ts.mut_type = mut_type;
-                            mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
-                        }
-
                     }
+
                 }
+                // }
             }
             break;
 
@@ -718,9 +719,9 @@ void Worker::fuzz_candidates_1(){
     // unfuzzed patchpoints
     for (size_t i = 0; i < selected_pps.unfuzzed_pps.size(); i++){
         if ( !pp_valid_check(selected_pps.unfuzzed_pps[i]) ) continue;
-        mutations_one(selected_pps.unfuzzed_pps[i], BYTE_FLIP);
-        mutations_one(selected_pps.unfuzzed_pps[i], BIT_FLIP);
-        //mutations_one(selected_pps.unfuzzed_pps[i], U8ADD);
+        //mutations_one(selected_pps.unfuzzed_pps[i], BYTE_FLIP);
+        //mutations_one(selected_pps.unfuzzed_pps[i], BIT_FLIP);
+        mutations_one(selected_pps.unfuzzed_pps[i], U8ADD);
     }
     // interesting patchpoints
     for (size_t i = 0; i < selected_pps.interest_pps.size(); i++){
@@ -766,20 +767,21 @@ void Worker::save_interest_pps(){
     size_t *count_ptr = (size_t *)posix_shm.shm_base_ptr;
     size_t max_wait_s = 1;
     // wait for afl++ used all testcases this worker produced
-    while (count_ptr[id] != cur_mut_counter && max_wait_s > 0)
+    while (count_ptr[id + 1] != cur_mut_counter && max_wait_s > 0)
     {   
-        printf("inconsistence in %d, count in shm:%ld, count in worker:%ld\n", id, count_ptr[id], cur_mut_counter);
+        printf("inconsistence in %d, count in shm:%ld, count in worker:%ld\n", id, count_ptr[id + 1], cur_mut_counter);
         sleep(1);
         max_wait_s--;
     }
-    count_ptr[id] = 0;
+    count_ptr[id + 1] = 0;
     cur_mut_counter = 0;
     
     std::filesystem::path afl_output_dir = "/home/proj/proj/test/afl_test1/output/default/queue/";
-    //std::string orig_file = "orig";
-    std::string new_cov_file = "+cov";
+    std::string orig_file = "orig";
+    //std::string new_cov_file = "+cov";
     for (const auto& file : std::filesystem::directory_iterator(afl_output_dir)){
-        if (std::filesystem::is_regular_file(file.path()) && file.path().string().find(new_cov_file) != std::string::npos){
+        if (std::filesystem::is_regular_file(file.path()) && file.path().string().find(orig_file) == std::string::npos){
+        //if (std::filesystem::is_regular_file(file.path()) && file.path().string().find(new_cov_file) != std::string::npos){
             if (afl_files.find(file.path().string()) != afl_files.end()){
                 continue;
             }
@@ -856,9 +858,9 @@ void Worker::start(){
     }
 
     // evenly dispatch different mutation approaches
-    if (id % 2 == 0) level = 1;
-    else level = 2;
-    //level = 2;
+    // if (id % 2 == 0) level = 1;
+    // else level = 2;
+    level = 1;
 
     // main loop of worker
     while(1){

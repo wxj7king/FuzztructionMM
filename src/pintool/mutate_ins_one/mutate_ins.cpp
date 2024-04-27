@@ -60,11 +60,11 @@ KNOB<std::string> KnobNewBranchAddr(KNOB_MODE_WRITEONCE, "pintool", "baddr", "0"
 
 VOID ByteFlip(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
     PIN_GetContextRegval(ctx, reg, reg_val);
-    printf("byte flip: instruction@0x%lx, register %s, original value=%lu ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
+    //printf("byte flip: instruction@0x%lx, register %s, original value=%lu ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
     // flip byte
     if (cur_iter == patch_point.iter2mut)
         reg_val[patch_point.mut_offset] ^= 0xff;
-    printf("mutated value of register is %lu\n", *(ADDRINT*)reg_val);
+    //printf("mutated value of register is %lu\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
     cur_iter++;
     if (cur_iter > patch_point.iter2mut && branch_addr == 0) PIN_Detach();
@@ -73,11 +73,11 @@ VOID ByteFlip(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
 
 VOID BitFlip(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
     PIN_GetContextRegval(ctx, reg, reg_val);
-    printf("bit flip: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
+    //printf("bit flip: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
     // flip bit
     if (cur_iter == patch_point.iter2mut)
         reg_val[patch_point.mut_offset / 8] ^= 1 << (patch_point.mut_offset % 8);
-    printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
+    //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
     cur_iter++;
     if (cur_iter > patch_point.iter2mut && branch_addr == 0) PIN_Detach();
@@ -120,11 +120,11 @@ VOID RandomByte0(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
 
 VOID U8Add(ADDRINT Ip, REG reg, UINT32 reg_size, CONTEXT *ctx){
     PIN_GetContextRegval(ctx, reg, reg_val);
-    printf("u8 adder: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
+    //printf("u8 adder: instruction@0x%lx, register %s, original value=%ld ,", Ip, REG_StringShort(reg).c_str(), *(ADDRINT*)reg_val);
     // xor with uint8 value
     if (cur_iter == patch_point.iter2mut)
         reg_val[patch_point.mut_offset] ^= u8_adder;
-    printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
+    //printf("mutated value of register is %ld\n", *(ADDRINT*)reg_val);
     PIN_SetContextRegval(ctx, reg, reg_val);
     cur_iter++;
     if (cur_iter > patch_point.iter2mut && branch_addr == 0) PIN_Detach();

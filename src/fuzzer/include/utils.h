@@ -9,7 +9,7 @@
 
 #define MQNAME "/FTMM_MQ"
 #define POSIX_SHM_NAME "FTMM_AFL_SHM"
-#define MAX_ITERATION 512
+#define MAX_ITERATION 64
 
 /// defined types
 typedef struct patch_point{

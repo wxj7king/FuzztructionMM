@@ -123,8 +123,8 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
     if (system(cmd.c_str()) != 0) return false;
 
     /// FIXIT:hijack!
-    //std::ifstream file("./output");
-    std::ifstream file(find_ins_out);
+    std::ifstream file("./output");
+    //std::ifstream file(find_ins_out);
     
     std::vector<std::string> lines;
     if (file.is_open()){
@@ -270,7 +270,7 @@ static bool init(){
     // initialize message queue
     mq_unlink(MQNAME);
     Worker::my_mqattr.mq_flags = 0;
-    Worker::my_mqattr.mq_maxmsg = 10;
+    Worker::my_mqattr.mq_maxmsg = 30;
     Worker::my_mqattr.mq_msgsize = sizeof(TestCase);
     Worker::my_mqattr.mq_curmsgs = 0;
     mqd_t tmp_mqd = mq_open(MQNAME, O_CREAT | O_EXCL,  0600, &Worker::my_mqattr);
@@ -283,7 +283,7 @@ static bool init(){
     // initialize shared memory between afl++
     shm_unlink(POSIX_SHM_NAME);
     if ((posix_shm.shmfd = shm_open(POSIX_SHM_NAME, O_CREAT | O_EXCL | O_RDWR, 0666)) != -1){
-        posix_shm.size_in_bytes = sizeof(size_t) * num_thread;
+        posix_shm.size_in_bytes = sizeof(size_t) * (num_thread + 1);
         if (ftruncate(posix_shm.shmfd, posix_shm.size_in_bytes) != -1){
             if ((posix_shm.shm_base_ptr = (unsigned char *)mmap(NULL, posix_shm.size_in_bytes, PROT_READ | PROT_WRITE, MAP_SHARED, posix_shm.shmfd, 0)) == MAP_FAILED){
                 perror("mmap() failed\n");
@@ -297,10 +297,10 @@ static bool init(){
         perror("shm_open() failed\n");
         return false;
     }
-    memset(posix_shm.shm_base_ptr, 0, sizeof(size_t) * num_thread);
+    memset(posix_shm.shm_base_ptr, 0, posix_shm.size_in_bytes);
 
     // tell afl++ the size of shared memory
-    *((size_t *)posix_shm.shm_base_ptr) = sizeof(size_t) * num_thread;
+    *((size_t *)posix_shm.shm_base_ptr) = posix_shm.size_in_bytes;
     Worker::posix_shm = posix_shm;
 
     return true;
