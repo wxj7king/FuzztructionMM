@@ -103,5 +103,10 @@ typedef struct afl_config{
     std::string dir_out;
 }AflConfig;
 
+typedef struct fuzzer_statistics{
+    size_t attempted_mutations;
+    size_t interest_testcases;
+    
+}FuzzerStatistics;
 
 #endif

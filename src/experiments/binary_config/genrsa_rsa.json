@@ -15,7 +15,7 @@
         ]
     },
 
-    "target": {
+    "consumer": {
         "env" : [
             "LD_LIBRARY_PATH=/home/proj/proj/openssl/"
         ],

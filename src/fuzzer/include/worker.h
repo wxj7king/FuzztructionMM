@@ -14,7 +14,10 @@ public:
     static inline PpsSetLock interest_pps;
     static inline PpsMultiSetLock interest_pps_multi;
     static inline std::mutex log_mtx;
-    static inline SourcePids source_pids;
+    // static inline SourcePids source_pids;
+    static inline bool stop_soon;
+    static inline std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
+    static inline size_t fuzzer_timeout;
     static inline PosixShmPara posix_shm;
     static inline std::string ftmm_dir;
     static inline struct mq_attr my_mqattr;
@@ -23,7 +26,7 @@ public:
     static inline size_t max_random_steps;
     static inline size_t max_num_one_mut;
     static inline size_t num_thread;
-    static inline size_t source_timeout;
+    static inline size_t generator_timeout;
     static inline size_t max_pps_one_mut;
     static inline BinConfig source_config;
     static inline int schedule_mode;
@@ -42,6 +45,7 @@ public:
     static std::string sha256(const std::string &file_path);
     static void output_log(const std::string& msg);
     static size_t get_iter(std::string out_dir, std::string addr_str, bool check_ptr, bool &is_pointer);
+    static size_t get_elapsed_seconds();
 
     void generate_testcases();
     void generate_testcases_multi();

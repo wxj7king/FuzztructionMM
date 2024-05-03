@@ -144,6 +144,13 @@ size_t Worker::get_iter(std::string out_dir, std::string addr_str, bool check_pt
     return iter_num;
 }
 
+size_t Worker::get_elapsed_seconds(){
+    auto now = std::chrono::high_resolution_clock::now();
+    auto time_period = std::chrono::duration_cast<std::chrono::seconds>(now - start_time);
+    size_t elapsed_seconds = time_period.count();
+    return elapsed_seconds;
+}
+
 bool Worker::pp_valid_check(const Patchpoint &pp){
     size_t num_iter = 0;
     bool check_ptr = false, is_pointer = false;
@@ -162,6 +169,7 @@ bool Worker::pp_valid_check(const Patchpoint &pp){
 }
 
 void Worker::generate_testcases(){
+    if (stop_soon) return;
     selected_pps.interest_pps.clear();
     selected_pps.unfuzzed_pps.clear();
     selected_pps.random_pps.clear();
@@ -219,6 +227,7 @@ void Worker::generate_testcases(){
 
 
 void Worker::generate_testcases_multi(){
+    if (stop_soon) return;
     selected_pps_multi.unfuzzed_pps.pps.clear();
     selected_pps_multi.interest_pps.pps.clear();
 
@@ -311,7 +320,7 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     // printf("\n");
 
     int pid = fork();
-    source_pids[id] = pid;
+    // source_pids[id] = pid;
 
     if (pid == -1){
         perror("fork failed!\n");
@@ -337,7 +346,7 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
         // assert(chdir(out_dirs[id].c_str()) == 0);
         if (chdir(work_dir.c_str()) != 0) perror("chdir() failed!\n");
         // set timeout
-        alarm(source_timeout);
+        alarm(generator_timeout);
         execve(source_argv[0], const_cast<char* const*>(source_argv.data()), const_cast<char* const*>(source_envp.data()));
         perror("execve failed!");
         exit(EXIT_FAILURE);
@@ -350,7 +359,7 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
         kill(pid, SIGKILL);
         waitpid(pid, &status, 0);
     }
-    source_pids[id] = -1;
+    // source_pids[id] = -1;
 
     bool fail = false;
     std::ifstream mutated_output(out_file);
@@ -396,17 +405,23 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     testcase.worker_id = id;
     cur_mut_counter++;
 
+    if (fuzzer_timeout != 0){
+        if (__glibc_unlikely(get_elapsed_seconds() > fuzzer_timeout))
+            stop_soon = true;
+    }
+
     return testcase;
 }
 
 void Worker::mutations_one(const Patchpoint &pp, int mut_type){
+    if (stop_soon) return;
     PintoolArgs pintool_args;
     uint64_t num_iter = addr2iter.map[pp.addr];
     pintool_args["-addr"] = std::to_string(pp.addr);
     pintool_args["-mut"] = std::to_string(mut_type);
     pintool_args["-iter"] = std::to_string(num_iter);
     std::vector<size_t> iters;
-    /// fast mode: only consider first and last iteration
+    /// fast mode: only consider first and last execution
     /// the value of iteration is zero based
     if (schedule_mode == 1){// fast
         iters.push_back(0);
@@ -429,6 +444,7 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
                 pintool_args["-iter2mut"] = std::to_string(iters[j]);
                 for (size_t i = 0; i < pp.reg_size * 8; i++)
                 {   
+                    if (stop_soon) return;
                     pintool_args["-off"] = std::to_string(i);
                     pintool_args["-baddr"] = "0";
                     TestCase ts = fuzz_one(pintool_args, pp);
@@ -436,6 +452,7 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
                     mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
 
                     /// combine branch flip
+                    if (stop_soon) return;
                     if (pp.next_mov_b4_jmp != 0){
                         pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
                         TestCase ts = fuzz_one(pintool_args, pp);
@@ -453,6 +470,7 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
                 pintool_args["-iter2mut"] = std::to_string(iters[j]);
                 for (size_t i = 0; i < pp.reg_size; i++)
                 {
+                    if (stop_soon) return;
                     pintool_args["-off"] = std::to_string(i);
                     pintool_args["-baddr"] = "0";
                     TestCase ts = fuzz_one(pintool_args, pp);
@@ -460,6 +478,7 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
                     mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
 
                     /// combine branch flip
+                    if (stop_soon) return;
                     if (pp.next_mov_b4_jmp != 0){
                         pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
                         TestCase ts = fuzz_one(pintool_args, pp);
@@ -473,11 +492,13 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
         case RANDOM_BYTE0:
             for (size_t i = 0; i < max_random_steps; i++)
             {
+                if (stop_soon) return;
                 pintool_args["-baddr"] = "0";
                 TestCase ts = fuzz_one(pintool_args, pp);
                 ts.mut_type = mut_type;
                 mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
 
+                if (stop_soon) return;
                 if (pp.next_mov_b4_jmp != 0){
                     pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
                     TestCase ts = fuzz_one(pintool_args, pp);
@@ -490,11 +511,13 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
             // random index and random byte
             for (size_t i = 0; i < max_random_steps; i++)
             {
+                if (stop_soon) return;
                 pintool_args["-baddr"] = "0";
                 TestCase ts = fuzz_one(pintool_args, pp);
                 ts.mut_type = mut_type;
                 mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
 
+                if (stop_soon) return;
                 if (pp.next_mov_b4_jmp != 0){
                     pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
                     TestCase ts = fuzz_one(pintool_args, pp);
@@ -502,18 +525,20 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
                     mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
                 }
             }
-            // specified index and random byte
             
+            // specified index and random byte
             for (size_t i = 1; i < std::min((uint8_t)4, pp.reg_size); i++)
             {   
                 pintool_args["-off"] = std::to_string(i);
                 for (size_t j = 0; j < max_random_steps; j++)
                 {
+                    if (stop_soon) return;
                     pintool_args["-baddr"] = "0";
                     TestCase ts = fuzz_one(pintool_args, pp);
                     ts.mut_type = mut_type;
                     mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
 
+                    if (stop_soon) return;
                     if (pp.next_mov_b4_jmp != 0){
                         pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
                         TestCase ts = fuzz_one(pintool_args, pp);
@@ -534,12 +559,14 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
                 pintool_args["-off"] = std::to_string(0);
                 for (size_t j = 0; j < 256; j++)
                 {
+                    if (stop_soon) return;
                     pintool_args["-baddr"] = "0";
                     pintool_args["-u8"] = std::to_string(j);
                     TestCase ts = fuzz_one(pintool_args, pp);
                     ts.mut_type = mut_type;
                     mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
 
+                    if (stop_soon) return;
                     if (pp.next_mov_b4_jmp != 0){
                         pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
                         TestCase ts = fuzz_one(pintool_args, pp);
@@ -555,10 +582,13 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
         case HAVOC:
             for (size_t i = 0; i < max_random_steps; i++)
             {   
+                if (stop_soon) return;
                 pintool_args["-baddr"] = "0";
                 TestCase ts = fuzz_one(pintool_args, pp);
                 ts.mut_type = mut_type;
                 mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+
+                if (stop_soon) return;
                 if (pp.next_mov_b4_jmp != 0){
                     pintool_args["-baddr"] = std::to_string(pp.next_mov_b4_jmp);
                     TestCase ts = fuzz_one(pintool_args, pp);
@@ -575,6 +605,7 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
 }
 
 void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
+    if (stop_soon) return;
     PintoolArgs pintool_args;
     std::string addrs_str = "", muts_off_str = "", muts_str = "", u8s_str = "";
     uint8_t max_reg_size = 0;
@@ -598,6 +629,7 @@ void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
             pintool_args["-u8"] = u8s_str;
             for (size_t i = 0; i < max_reg_size * 8; i++)
             {   
+                if (stop_soon) return;
                 muts_off_str = "";
                 for (size_t j = 0; j < pps.size(); j ++)
                     /// wrap to zero if the offset is larger than its
@@ -618,6 +650,7 @@ void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
             pintool_args["-u8"] = u8s_str;
             for (size_t i = 0; i < max_reg_size; i++)
             {   
+                if (stop_soon) return;
                 muts_off_str = "";
                 for (size_t j = 0; j < pps.size(); j ++)
                     /// wrap to zero if the offset is larger than its
@@ -642,6 +675,7 @@ void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
             pintool_args["-off"] = muts_off_str;
             for (size_t i = 0; i < max_random_steps; i++)
             {
+                if (stop_soon) return;
                 TestCase ts = fuzz_one(pintool_args, pps[0]);
                 ts.mut_type = mut_type;
                 mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
@@ -659,6 +693,7 @@ void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
             pintool_args["-off"] = muts_off_str;
             for (size_t i = 0; i < max_random_steps; i++)
             {
+                if (stop_soon) return;
                 TestCase ts = fuzz_one(pintool_args, pps[0]);
                 ts.mut_type = mut_type;
                 mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
@@ -676,6 +711,7 @@ void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
 
                 for (size_t j = 0; j < 256; j++)
                 {
+                    if (stop_soon) return;
                     u8s_str = "";
                     for (size_t k = 0; k < pps.size(); k ++)
                         u8s_str += (std::to_string(j) + ",");
@@ -702,6 +738,7 @@ void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
             pintool_args["-off"] = muts_off_str;
             for (size_t i = 0; i < max_random_steps; i++)
             {
+                if (stop_soon) return;
                 TestCase ts = fuzz_one(pintool_args, pps[0]);
                 ts.mut_type = mut_type;
                 mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
@@ -716,8 +753,10 @@ void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
 }
 
 void Worker::fuzz_candidates_1(){
+    if (stop_soon) return;
     // unfuzzed patchpoints
     for (size_t i = 0; i < selected_pps.unfuzzed_pps.size(); i++){
+        if (stop_soon) return;
         if ( !pp_valid_check(selected_pps.unfuzzed_pps[i]) ) continue;
         //mutations_one(selected_pps.unfuzzed_pps[i], BYTE_FLIP);
         //mutations_one(selected_pps.unfuzzed_pps[i], BIT_FLIP);
@@ -725,12 +764,14 @@ void Worker::fuzz_candidates_1(){
     }
     // interesting patchpoints
     for (size_t i = 0; i < selected_pps.interest_pps.size(); i++){
+        if (stop_soon) return;
         mutations_one(selected_pps.interest_pps[i], RANDOM_BYTE0);
         mutations_one(selected_pps.interest_pps[i], RANDOM_BYTE);
         //mutations_one(selected_pps.interest_pps[i], HAVOC);
     }
     // random patchpoints
     for (size_t i = 0; i < selected_pps.random_pps.size(); i++){
+        if (stop_soon) return;
         if ( !pp_valid_check(selected_pps.random_pps[i]) ) continue;
         mutations_one(selected_pps.random_pps[i], RANDOM_BYTE0);
         mutations_one(selected_pps.random_pps[i], RANDOM_BYTE);
@@ -740,15 +781,18 @@ void Worker::fuzz_candidates_1(){
 }
 
 void Worker::fuzz_candidates_2(){
+    if (stop_soon) return;
     // unfuzzed patchpoints
     Patchpoints new_pps;
     for (const auto &pp : selected_pps_multi.unfuzzed_pps.pps)
     {
+        if (stop_soon) return;
         if (pp_valid_check(pp))
             new_pps.push_back(pp);
     }
     selected_pps_multi.unfuzzed_pps.pps = new_pps;
     if (new_pps.size() > 1){
+        if (stop_soon) return;
         mutations_multi(selected_pps_multi.unfuzzed_pps.pps, BYTE_FLIP_MULTI);
         mutations_multi(selected_pps_multi.unfuzzed_pps.pps, BIT_FLIP_MULTI);
         //mutations_multi(selected_pps.unfuzzed_pps[i], U8ADD_MULTI);
@@ -756,6 +800,7 @@ void Worker::fuzz_candidates_2(){
     
     // interesting patchpoints
     if (!selected_pps_multi.interest_pps.pps.empty()){
+        if (stop_soon) return;
         mutations_multi(selected_pps_multi.interest_pps.pps, RANDOM_BYTE0_MULTI);
         mutations_multi(selected_pps_multi.interest_pps.pps, RANDOM_BYTE_MULTI);
         mutations_multi(selected_pps_multi.interest_pps.pps, HAVOC_MULTI);
@@ -764,11 +809,13 @@ void Worker::fuzz_candidates_2(){
 }
 
 void Worker::save_interest_pps(){
+    if (stop_soon) return;
     size_t *count_ptr = (size_t *)posix_shm.shm_base_ptr;
     size_t max_wait_s = 1;
     // wait for afl++ used all testcases this worker produced
     while (count_ptr[id + 1] != cur_mut_counter && max_wait_s > 0)
     {   
+        if (stop_soon) return;
         printf("inconsistence in %d, count in shm:%ld, count in worker:%ld\n", id, count_ptr[id + 1], cur_mut_counter);
         sleep(1);
         max_wait_s--;
@@ -780,6 +827,7 @@ void Worker::save_interest_pps(){
     std::string orig_file = "orig";
     //std::string new_cov_file = "+cov";
     for (const auto& file : std::filesystem::directory_iterator(afl_output_dir)){
+        if (stop_soon) return;
         if (std::filesystem::is_regular_file(file.path()) && file.path().string().find(orig_file) == std::string::npos){
         //if (std::filesystem::is_regular_file(file.path()) && file.path().string().find(new_cov_file) != std::string::npos){
             if (afl_files.find(file.path().string()) != afl_files.end()){
@@ -797,6 +845,7 @@ void Worker::save_interest_pps(){
         {
             std::lock_guard<std::mutex> lock(interest_pps.mutex);
             for (const auto& pair : hash2pp){
+                if (stop_soon) return;
                 if (afl_files_hashes.find(pair.first) != afl_files_hashes.end()){
                     Patchpoint tmp_pp = pair.second;
                     //printf("find interesting pps: %s, %s\n", pair.first.c_str(), addrs_str.c_str());
@@ -815,6 +864,7 @@ void Worker::save_interest_pps(){
             std::lock_guard<std::mutex> lock(interest_pps_multi.mutex);
             
             for (const auto& pair : hash2pps_multi){
+                if (stop_soon) return;
                 if (afl_files_hashes.find(pair.first) != afl_files_hashes.end()){
                     //printf("find interesting pps: %s, %s\n", pair.first.c_str(), addrs_str.c_str());
                     if (pair.second.str() == selected_pps_multi.interest_pps.str()) continue;
@@ -873,10 +923,10 @@ void Worker::start(){
             fuzz_candidates_2();
             save_interest_pps();
         }
-        //printf("%d: after save\n", id);
+        if (stop_soon) break;
     }
     
     mq_close(mqd);
-    printf("Worker %d exited!\n", id);
+    // printf("Worker %d exited!\n", id);
     return;
 }

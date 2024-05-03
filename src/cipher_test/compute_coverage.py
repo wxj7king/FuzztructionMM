@@ -2,8 +2,8 @@
 import os
 import subprocess
 
-test_case_dir = "/home/proj/proj/src/fuzzer/keys/"
-#test_case_dir = "/home/proj/proj/test/interesting_out/output_april_2/default/queue/"
+#test_case_dir = "/home/proj/proj/src/fuzzer/keys/"
+test_case_dir = "/home/proj/proj/test/interesting_out/output_april_2/default/queue/"
 #test_case_dir = "/home/proj/proj/src/cipher_test/rsa_keys/"
 drcov_bin_path = "/home/proj/proj/tools/DynamoRIO-Linux-9.93.19580/bin64/drrun"
 drcov_log_dir = "/tmp/drcov/"
@@ -65,6 +65,7 @@ def run_drcov(test_case_path):
         'pass:xxxxx'
     ]
     cmd = drcov_cmd + openssl_cmd
+    print(cmd, end="\n")
     result = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=new_env)
     out, err = result.communicate()
     rc = result.returncode

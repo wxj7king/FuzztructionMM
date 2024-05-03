@@ -29,17 +29,17 @@ static const std::string log_dir = "/tmp/ftmm_workdir/ftm_log";
 static std::set<std::string> delete_white_list;
 
 /// configurable parameters
-static int schedule_mode = 1;
+static int schedule_mode = 2;
 static size_t max_random_steps = 32;
 static size_t max_num_one_mut = 1024;
 static size_t num_thread = 1;
-static size_t source_timeout = 3;
+static size_t generator_timeout = 3;
 static size_t max_pps_one_mut = 30;
 /// run forever if it is zero
 static size_t fuzzer_timeout = 0;
 static bool with_afl = false;
 static std::string config_path = "";
-static BinConfig target_config;
+static BinConfig consumer_config;
 static AflConfig afl_config;
 
 void main_sig_handler(int sig){
@@ -54,20 +54,22 @@ void main_sig_handler(int sig){
 
 void worker_sig_handler(int sig){
     // kill potential child processes forked by worker threads
-    for (const auto& pid : Worker::source_pids){
-        if (pid != -1){
-            //printf("child process %d exist, kill it\n", pid);
-            kill(pid, SIGKILL);
-            waitpid(pid, 0, 0);
-        }
-    }
-    // detach from worker threads
-    for (const auto& tid : threads){
-        //printf("detach from thread %d\n", tid);
-        pthread_detach(tid);
-    }
+    // for (const auto& pid : Worker::source_pids){
+    //     if (pid != -1){
+    //         //printf("child process %d exist, kill it\n", pid);
+    //         kill(pid, SIGKILL);
+    //         waitpid(pid, 0, 0);
+    //     }
+    // }
+    // // detach from worker threads
+    // for (const auto& tid : threads){
+    //     //printf("detach from thread %d\n", tid);
+    //     pthread_detach(tid);
+    // }
 
-    _exit(0);
+    // _exit(0);
+
+    Worker::stop_soon = true;
 }
 
 static void at_exit(){
@@ -87,7 +89,8 @@ static void at_exit(){
     mq_unlink(MQNAME);
     munmap(posix_shm.shm_base_ptr, posix_shm.size_in_bytes);
     shm_unlink(POSIX_SHM_NAME);
-    printf("\nFuzztruction--: Have a nice day!\n");
+    //printf("\033[2J\033[H");
+    printf("\nFuzztruction--: Bye!\n");
 
 }
 
@@ -123,8 +126,8 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
     if (system(cmd.c_str()) != 0) return false;
 
     /// FIXIT:hijack!
-    std::ifstream file("./output");
-    //std::ifstream file(find_ins_out);
+    //std::ifstream file("./output");
+    std::ifstream file(find_ins_out);
     
     std::vector<std::string> lines;
     if (file.is_open()){
@@ -176,7 +179,7 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
         }
         // 0 or addr
         pp.next_mov_b4_jmp = found_mov_b4_jmp_addr;
-        //printf("%s, %p, %u, %p\n", disas.c_str(), (void *)pp.addr, pp.reg_size, (void *)pp.next_mov_b4_jmp);
+        // printf("%s, %p, %u, %p\n", disas.c_str(), (void *)pp.addr, pp.reg_size, (void *)pp.next_mov_b4_jmp);
         patch_points.pps.push_back(pp);
     }
     
@@ -202,10 +205,7 @@ static void child_process(){
     }
     //return;
     Worker::source_unfuzzed_pps.pps = Worker::source_pps.pps;
-    
-    // std::random_device rd;
-    // std::mt19937 gen(rd());
-    // std::shuffle(unfuzzed_pps.begin(), unfuzzed_pps.end(), gen);
+    Worker::start_time = std::chrono::high_resolution_clock::now();
 
     for (size_t i = 0; i < num_thread; i++){
         targs[i].tid = i;
@@ -216,7 +216,7 @@ static void child_process(){
         }
     }
 
-    // wait for all workers even though they will not return
+    // wait for worker threads
     for (size_t i = 0; i < num_thread; i++){
         int rc = pthread_join(threads[i], NULL);
         if (rc) {
@@ -230,7 +230,7 @@ static void child_process(){
 static bool init(){
 
     std::filesystem::path curr_path = std::filesystem::current_path();
-    printf("Current path: %s\n", curr_path.string().c_str());
+    //printf("\nCurrent path: %s\n", curr_path.string().c_str());
 
     threads.resize(num_thread);
     targs.resize(num_thread);
@@ -238,10 +238,10 @@ static bool init(){
     Worker::max_random_steps = max_random_steps;
     Worker::max_num_one_mut = max_num_one_mut;
     Worker::num_thread = num_thread;
-    Worker::source_timeout = source_timeout;
+    Worker::generator_timeout = generator_timeout;
     Worker::max_pps_one_mut = max_pps_one_mut;
 
-    Worker::source_pids.assign(num_thread, -1);
+    // Worker::source_pids.assign(num_thread, -1);
     Worker::ftmm_dir = ftmm_dir;
     Worker::new_selection_config.interest_num = 10;
     Worker::new_selection_config.unfuzzed_num = 20;
@@ -251,6 +251,8 @@ static bool init(){
     Worker::global_read_ptr.random_flag = false;
     /// multi pps starts from 2
     Worker::global_read_ptr.curr_multi_pps_num = 2;
+    Worker::stop_soon = false;
+    Worker::fuzzer_timeout = fuzzer_timeout;
 
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
@@ -276,6 +278,7 @@ static bool init(){
     mqd_t tmp_mqd = mq_open(MQNAME, O_CREAT | O_EXCL,  0600, &Worker::my_mqattr);
     if (tmp_mqd == -1){
         perror ("mq_open");
+        printf("please set the max length of posix message queue with: \'echo 30 > /proc/sys/fs/mqueue/msg_max\'\n");
         return false;
     }
     mq_close(tmp_mqd);
@@ -338,12 +341,12 @@ static bool load_config(const std::string &path){
         Worker::source_config.bin_path = data["generator"]["bin_path"];
         for (const auto &e : data["generator"]["args"])
             Worker::source_config.args.push_back(e);
-        // target
-        for (const auto &e : data["target"]["env"])
-            target_config.env.push_back(e);
-        target_config.bin_path = data["target"]["bin_path"];
-        for (const auto &e : data["target"]["args"])
-            target_config.args.push_back(e);
+        // consumer
+        for (const auto &e : data["consumer"]["env"])
+            consumer_config.env.push_back(e);
+        consumer_config.bin_path = data["consumer"]["bin_path"];
+        for (const auto &e : data["consumer"]["args"])
+            consumer_config.args.push_back(e);
         // afl++
         afl_config.dir_in = data["afl++"]["dir_in"];
         afl_config.dir_out = data["afl++"]["dir_out"];
@@ -364,11 +367,11 @@ static void usage(){
         "\n  -f path           config file of parameters of source and sink binary"
         "\n  -r num            maxmium steps for random mutation (default: 32)"
         "\n  -n num_thread     number of threads (default: 1)"
-        "\n  -T seconds        fuzzer terminates after this time period (default: forever)"
+        "\n  -T seconds        timeout for fuzzer (default: forever)"
         "\n  -t seconds        timeout for each run of mutated source binary (default: 3s)"
         "\n  -m num            maximum number of test cases one mutation can produce (default: 1024)"
-        "\n  -l 1/2            fast mode: 1, fine-grained mode: 2 (default: 1)"
-        "\n  -a                use mutations of AFL++ (default: false)"
+        "\n  -l 1/2            fast mode: 1, fine-grained mode: 2 (default: 2)"
+        "\n  -a                use mutations from AFL++ (default: false)"
         "\n  -h help           show help\n"
         ;
     fprintf(stdout, "Fuzztrunction-- v0.1\n%s\n", table);
@@ -377,6 +380,7 @@ static void usage(){
 
 static void print_params(){
     const char* params = 
+        "Fuzztrunction-- v0.1\n"
         "Run options: "
         "\n  -f %s"
         "\n  -r %ld"
@@ -388,7 +392,7 @@ static void print_params(){
         "\n  -a %d\n"
         ;
     
-    printf(params, config_path.c_str(), max_random_steps, num_thread, fuzzer_timeout, source_timeout, max_num_one_mut, schedule_mode, with_afl);
+    printf(params, config_path.c_str(), max_random_steps, num_thread, fuzzer_timeout, generator_timeout, max_num_one_mut, schedule_mode, with_afl);
 }
 
 
@@ -429,14 +433,14 @@ int main(int argc, char **argv){
             case 'T':
                 fuzzer_timeout = atoll(optarg);
                 if (fuzzer_timeout == 0){
-                    fprintf(stderr, "Invalid value of the fuzzer: %s\n", optarg);
+                    fprintf(stderr, "Invalid value of the fuzzer timeout: %s\n", optarg);
                     show_help = 1;
                 }
                 break;
 
             case 't':
-                source_timeout = atoll(optarg);
-                if (source_timeout == 0){
+                generator_timeout = atoll(optarg);
+                if (generator_timeout == 0){
                     fprintf(stderr, "Invalid value of the timeout for the execution of source binary: %s\n", optarg);
                     show_help = 1;
                 }
@@ -492,22 +496,22 @@ int main(int argc, char **argv){
     print_params();
     printf("\nGenerator config:\n");
     printf("binary path: %s\n", Worker::source_config.bin_path.c_str());
-    printf("env: \n");
+    printf("env: ");
     for (auto &e : Worker::source_config.env)
         printf("%s\n", e.c_str());
     printf("args: ");
     for (auto &a : Worker::source_config.args)
         printf("%s ", a.c_str());
 
-    printf("\n\nTarget config:\n");
-    printf("binary path: %s\n", target_config.bin_path.c_str());
+    printf("\n\nConsumer config:\n");
+    printf("binary path: %s\n", consumer_config.bin_path.c_str());
     printf("env: \n");
-    for (auto &e : target_config.env)
+    for (auto &e : consumer_config.env)
         printf("%s\n", e.c_str());
     printf("args: ");
-    for (auto &a : target_config.args)
+    for (auto &a : consumer_config.args)
         printf("%s ", a.c_str());
-    printf("\n");
+    printf("\n\n");
 
     //exit(0);
     if (!init()) return -1;
@@ -539,8 +543,8 @@ int main(int argc, char **argv){
     afl_argv.push_back("-o");
     afl_argv.push_back(afl_config.dir_out.c_str());
     afl_argv.push_back("--");
-    afl_argv.push_back(target_config.bin_path.c_str());
-    for (const auto &a : target_config.args)
+    afl_argv.push_back(consumer_config.bin_path.c_str());
+    for (const auto &a : consumer_config.args)
     {
         afl_argv.push_back(a.c_str());
     }
@@ -552,7 +556,7 @@ int main(int argc, char **argv){
     }
     afl_envp.push_back("AFL_CUSTOM_MUTATOR_LIBRARY=/home/proj/proj/src/afl_customut/inject_ts_multi2.so");
     /// TODO: really need this?
-    for (const auto &e : target_config.env)
+    for (const auto &e : consumer_config.env)
     {
         afl_envp.push_back(e.c_str());
     }
@@ -576,12 +580,12 @@ int main(int argc, char **argv){
     
     // child_process();
     waitpid(worker_pid, &status, 0);
-    if (WIFEXITED(status)) printf("Worker process with PID %ld exited with status 0x%x.\n", (long)worker_pid, WEXITSTATUS(status));
+    if (WIFEXITED(status)){
+        if (WEXITSTATUS(status) != 0)
+            printf("Worker process with PID %ld exited with status 0x%x.\n", (long)worker_pid, WEXITSTATUS(status));
+    }
     else if (WIFSIGNALED(status)) printf("Worker process with PID %ld has been terminated by signal %d .\n", (long)worker_pid, WTERMSIG(status));
 
-    // waitpid(afl_pid, &status, 0);
-    // if (WIFEXITED(status)) printf("worker process with PID %ld exited with status 0x%x.\n", (long)afl_pid, WEXITSTATUS(status));
-    // else printf("afl not exited?!\n");
     kill(afl_pid, SIGKILL);
     waitpid(afl_pid, &status, 0);
     reap_resources();
