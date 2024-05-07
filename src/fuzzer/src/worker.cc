@@ -248,7 +248,8 @@ void Worker::generate_testcases_multi(){
             selected_pps_multi.unfuzzed_pps.pps.push_back(source_pps.pps[i]);
         }
         selected_pps_multi.unfuzzed_pps.original_num = my_multi_pps_num;
-        global_read_ptr.ptr += my_multi_pps_num;
+        //global_read_ptr.ptr += my_multi_pps_num;
+        global_read_ptr.ptr ++;
         if (global_read_ptr.ptr > source_pps.pps.size() - 1){
             global_read_ptr.ptr = 0;
             if (global_read_ptr.curr_multi_pps_num == max_pps_one_mut && !global_read_ptr.random_flag) global_read_ptr.random_flag = true;
@@ -908,9 +909,9 @@ void Worker::start(){
     }
 
     // evenly dispatch different mutation approaches
-    // if (id % 2 == 0) level = 1;
-    // else level = 2;
-    level = 1;
+    if (id % 2 == 0) level = 1;
+    else level = 2;
+    //level = 1;
 
     // main loop of worker
     while(1){
