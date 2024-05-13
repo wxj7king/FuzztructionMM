@@ -1,1 +1,0 @@
-genrsa -passout pass:xxxx -aes128 -out aes128_512 512

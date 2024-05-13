@@ -1,3 +1,0 @@
-Pin: pin-3.28-98749-6643ecee5
-Copyright 2002-2023 Intel Corporation.
-E:  find_inst_sites.cpp:45: Cannot use IARG_MEMORYREAD_EA for ins without memory read (    12 0x00007f0f9585c034 push rbp)

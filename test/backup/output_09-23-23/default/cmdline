@@ -1,7 +1,0 @@
-/home/proj/proj/openssl/apps/openssl
-rsa
--check
--in
-@@
--passin
-pass:xxxxx
