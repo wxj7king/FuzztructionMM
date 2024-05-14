@@ -1,9 +1,9 @@
 {
     "generator": {
         "env" : [
-            "LD_LIBRARY_PATH=/home/proj/proj/uninstrumented/openssl/"
+            "LD_LIBRARY_PATH=/home/user/Fuzztrunction--/targets/openssl/vanilla/openssl/"
         ],
-        "bin_path" : "/home/proj/proj/uninstrumented/openssl/apps/openssl",
+        "bin_path" : "/home/user/Fuzztrunction--/targets/openssl/vanilla/openssl/apps/openssl",
         "args" : [
             "genrsa",
             "-aes128",
@@ -17,9 +17,9 @@
 
     "consumer": {
         "env" : [
-            "LD_LIBRARY_PATH=/home/proj/proj/openssl/"
+            "LD_LIBRARY_PATH=/home/user/Fuzztrunction--/targets/openssl/afl/openssl/"
         ],
-        "bin_path" : "/home/proj/proj/openssl/apps/openssl",
+        "bin_path" : "/home/user/Fuzztrunction--/targets/openssl/afl/openssl/apps/openssl",
         "args" : [
             "rsa",
             "-check",
@@ -31,7 +31,7 @@
     },
 
     "afl++": {
-        "dir_in" : "/home/proj/proj/test/afl_test1/input",
-        "dir_out" : "/home/proj/proj/test/afl_test1/output"
+        "dir_in" : "/home/user/Fuzztrunction--/targets/openssl/afl_in",
+        "dir_out" : "/home/user/Fuzztrunction--/targets/openssl/afl_in"
     }
 }
