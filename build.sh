@@ -9,10 +9,14 @@ function print_info {
     echo "${text_bold}${text_green}${1}${text_reset}"
 }
 
+pwd=$PWD
+
 # Download Pintool
 print_info "[+] Downloading Pintool..."
-wget -nc https://software.intel.com/sites/landingpage/pintool/downloads/pin-3.28-98749-g6643ecee5-gcc-linux.tar.gz \
-&& tar -xf ./pin-3.28-98749-g6643ecee5-gcc-linux.tar.gz && rm ./pin-3.28-98749-g6643ecee5-gcc-linux.tar.gz
+if [ ! -d "./pin-3.28-98749-g6643ecee5-gcc-linux" ]; then
+    wget -nc https://software.intel.com/sites/landingpage/pintool/downloads/pin-3.28-98749-g6643ecee5-gcc-linux.tar.gz \
+    && tar -xf ./pin-3.28-98749-g6643ecee5-gcc-linux.tar.gz && rm ./pin-3.28-98749-g6643ecee5-gcc-linux.tar.gz
+fi
 
 # Download AFL++
 print_info "[+] Downloading and building AFL++..."
@@ -26,19 +30,20 @@ popd
 
 # Build pintools
 print_info "[+] Building pintools..."
+pin_root="${pwd}/pin-3.28-98749-g6643ecee5-gcc-linux"
 pushd ./pintool
-chmod +x make.sh && ./make.sh
+chmod +x make.sh && pin_root=$pin_root ./make.sh
 popd
 
 # Build AFL++ custom mutator
 print_info "[+] Building custom mutator of AFL++..."
+aflpp_include="-I${pwd}/AFLplusplus/include"
 pushd ./afl_custom_mutator
-make
+AFLPP_INCLUDE=$aflpp_include make
 popd
 
 # Generate config file for dependencies
 print_info "[+] Generating config file for dependencies above..."
-pwd=$PWD
 dep_config="{ \"deps\" : { "
 dep_config+="\"aflpp\" : \"${pwd}/AFLplusplus\", "
 dep_config+="\"pinbin\" : \"${pwd}/pin-3.28-98749-g6643ecee5-gcc-linux/pin\", "

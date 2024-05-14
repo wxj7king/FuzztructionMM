@@ -1,13 +1,11 @@
 CXX = g++
 CXXFLAGS = -Wall -g -O3 -std=c++2a #-fsanitize=address
-LIBS = -lssl -lcrypto
+LIBS = -lssl -lcrypto -lpthread -lrt
 
 MYHEADERS_H = -I.
-OPENSSL_INCLUDE_DIR = -I/home/proj/proj/uninstrumented/openssl/include
-OPENSSL_LIB_DIR = -L/home/proj/proj/uninstrumented/openssl
 
 fuzzer: src/worker.o src/main.o 
-	$(CXX) $(CXXFLAGS) $(OPENSSL_INCLUDE_DIR) $(OPENSSL_LIB_DIR) -o $@ src/main.o src/worker.o $(LIBS)
+	$(CXX) $(CXXFLAGS) -o $@ src/main.o src/worker.o $(LIBS)
 
 src/worker.o: src/worker.cc
 	$(CXX) $(CXXFLAGS) $(MYHEADERS_H) -c -o $@ src/worker.cc 
@@ -20,4 +18,4 @@ clean:
 	rm -f src/worker.o
 	rm -f src/main.o
 	rm -f dep_config.json
-	rm -f pin.log	
+	rm -f pin.log
