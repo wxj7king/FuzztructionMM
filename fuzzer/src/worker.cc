@@ -96,39 +96,103 @@ void Worker::output_log(const std::string& msg){
 }
 
 size_t Worker::get_iter(std::string out_dir, std::string addr_str, bool check_ptr, bool &is_pointer){
-    std::string source_out = out_dir + "/tmp_get_iter";
+    std::string source_out = out_dir + "/tmp_get_iter" + source_config.output_suffix;
     std::string get_iter_out = out_dir + "/tmp_pintool";
-    std::ostringstream oss;
-
-    for (const auto &e : source_config.env)
-    {
-        oss << e << " ";
-    }
-    oss << pinbin_path << " ";
-    oss << "-t" << " ";
-    oss << pintool_path + "/obj-intel64/get_iter_num.so" << " ";
-    oss << "-addr" << " ";
-    oss << addr_str << " ";
-    oss << "-o" << " ";
-    oss << get_iter_out << " ";
-    oss << "-p" << " ";
-    if (check_ptr) oss << "1" << " ";
-    else oss << "0" << " ";
-    oss << "--" << " ";
-    oss << source_config.bin_path << " ";
+    std::vector<const char*> source_argv;
+    std::vector<const char*> source_envp;
+    
+    // argv
+    source_argv.push_back(pinbin_path.c_str());
+    source_argv.push_back("-t");
+    source_argv.push_back((pintool_path + "/obj-intel64/get_iter_num.so").c_str());
+    source_argv.push_back("-addr");
+    source_argv.push_back(addr_str.c_str());
+    source_argv.push_back("-o");
+    source_argv.push_back(get_iter_out.c_str());
+    source_argv.push_back("-p");
+    if (check_ptr) source_argv.push_back("1");
+    else source_argv.push_back("0");
+    source_argv.push_back("--");
+    source_argv.push_back(source_config.bin_path.c_str());
     for (const auto &a : source_config.args)
     {   
-        if (a == "@@"){
-            oss << source_out << " ";
+        if (a == "$$"){
+            source_argv.push_back(source_out.c_str());
+        }else if (a == "@@"){
+            source_argv.push_back(source_config.seed_file.c_str());
         }else{
-            oss << a << " ";
+            source_argv.push_back(a.c_str());
         }
     }
-    oss << ">/dev/null 2>&1" << " ";
+    source_argv.push_back(0);
 
-    std::string cmd = oss.str();
-    //printf("get_iter cmd: %s\n", cmd.c_str());
-    if (system(cmd.c_str()) != 0) return 0;
+    // envp
+    for (const auto &e : source_config.env)
+    {
+        source_envp.push_back(e.c_str());
+    }
+    source_envp.push_back(0);
+
+    // fork and run
+    int pid = fork();
+    if (pid == -1){
+        perror("fork failed!\n");
+        return false;
+    }else if(pid == 0){
+        // discard output
+        int null_fd = open("/dev/null", O_WRONLY);
+        if (null_fd < 0) perror("failed to open /dev/null!");
+        dup2(null_fd, STDOUT_FILENO);
+        dup2(null_fd, STDERR_FILENO);
+        close(null_fd);
+        if (source_config.input_type == "Stdin"){
+            int input_file_fd = open(source_config.seed_file.c_str(), O_RDONLY);
+            dup2(input_file_fd, STDIN_FILENO);
+            close(input_file_fd);
+        }
+        execve(source_argv[0], const_cast<char* const*>(source_argv.data()), const_cast<char* const*>(source_envp.data()));
+        perror("execve failed!");
+        exit(EXIT_FAILURE);
+    }
+
+    int status;
+    waitpid(pid, &status, 0);
+    if (WEXITSTATUS(status) != 0){
+        perror("get_iter() failed!\n");
+        abort();
+    }
+
+    // std::ostringstream oss;
+    // for (const auto &e : source_config.env)
+    // {
+    //     oss << e << " ";
+    // }
+    // oss << pinbin_path << " ";
+    // oss << "-t" << " ";
+    // oss << pintool_path + "/obj-intel64/get_iter_num.so" << " ";
+    // oss << "-addr" << " ";
+    // oss << addr_str << " ";
+    // oss << "-o" << " ";
+    // oss << get_iter_out << " ";
+    // oss << "-p" << " ";
+    // if (check_ptr) oss << "1" << " ";
+    // else oss << "0" << " ";
+    // oss << "--" << " ";
+    // oss << source_config.bin_path << " ";
+    // for (const auto &a : source_config.args)
+    // {   
+    //     if (a == "$$"){
+    //         oss << source_out << " ";
+    //     }else{
+    //         oss << a << " ";
+    //     }
+    // }
+    // oss << ">/dev/null 2>&1" << " ";
+
+    // std::string cmd = oss.str();
+    // //printf("get_iter cmd: %s\n", cmd.c_str());
+    // if (system(cmd.c_str()) != 0) return 0;
+
     std::ifstream file(get_iter_out);
     std::string result = "";
     std::getline(file, result);
@@ -285,7 +349,7 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     auto duration = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
     std::string timestamp = std::to_string(millis);
-    std::string out_file = work_dir + "/rsak_" + std::to_string(id) + "_" + timestamp;
+    std::string out_file = work_dir + "/rsak_" + std::to_string(id) + "_" + timestamp + source_config.output_suffix;
     std::vector<const char*> source_argv;
     std::vector<const char*> source_envp;
     TestCase testcase;
@@ -308,8 +372,10 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     source_argv.push_back(source_config.bin_path.c_str());
     for (const auto &a : source_config.args)
     {
-        if (a == "@@"){
+        if (a == "$$"){
             source_argv.push_back(out_file.c_str());
+        }else if (a == "@@"){
+            source_argv.push_back(source_config.seed_file.c_str());
         }else{
             source_argv.push_back(a.c_str());
         }
@@ -342,6 +408,11 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
         dup2(null_fd, STDOUT_FILENO);
         dup2(null_fd, STDERR_FILENO);
         close(null_fd);
+        if (source_config.input_type == "Stdin"){
+            int input_file_fd = open(source_config.seed_file.c_str(), O_RDONLY);
+            dup2(input_file_fd, STDIN_FILENO);
+            close(input_file_fd);
+        }
         // set limit to the file size of output to 8MB
         struct rlimit limit;
         limit.rlim_cur = 1024 * 1024 * 8;

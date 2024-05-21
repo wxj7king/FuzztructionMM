@@ -18,9 +18,8 @@ RUN \
     curl ninja-build xdot aspell-en neovim libgmp-dev tmux \
     man psmisc lsof rsync zip unzip qpdf ncdu fdupes parallel \
     texlive texlive-latex-extra texlive-fonts-recommended dvipng cm-super \
-    virtualenv python2 g++ zlib1g-dev libc++-dev mercurial nano libssl-dev
-
-RUN sudo pip3 install mypy pylint matplotlib pyelftools lit pyyaml psutil
+    virtualenv python2 g++ zlib1g-dev libc++-dev mercurial nano libssl-dev \
+    lld llvm llvm-dev clang gcc-11-plugin-dev
 
 RUN locale-gen en_US.UTF-8
 ARG USER_UID=1000

@@ -3,7 +3,7 @@
 set -eu
 set -o pipefail
 
-container_name="ftmm"
+container_name="ftmm-exp"
 container="$(docker ps --filter="name=$container_name" --latest --quiet)"
 if [[ -n "$container" ]]; then
     echo "Found running instance $container, stopping..."

@@ -13,6 +13,7 @@
 #include <sys/shm.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 
 #include "include/utils.h"
 #include "include/worker.h"
@@ -98,33 +99,100 @@ static void at_exit(){
 }
 
 static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points){
-    std::string source_out = out_dir + "/tmp_source";
+    std::string source_out = out_dir + "/tmp_source" + Worker::source_config.output_suffix;
     std::string find_ins_out = out_dir + "/tmp_pintool";
-    std::ostringstream oss;
-    for (const auto &e : Worker::source_config.env)
-    {
-        oss << e << " ";
-    }
-    oss << Worker::pinbin_path << " ";
-    oss << "-t" << " ";
-    oss << Worker::pintool_path + "/obj-intel64/find_inst_sites.so" << " ";
-    oss << "-o" << " ";
-    oss << find_ins_out << " ";
-    oss << "--" << " ";
-    oss << Worker::source_config.bin_path << " ";
+    std::vector<const char*> source_argv;
+    std::vector<const char*> source_envp;
+
+    // argv
+    source_argv.push_back(Worker::pinbin_path.c_str());
+    source_argv.push_back("-t");
+    source_argv.push_back((Worker::pintool_path + "/obj-intel64/find_inst_sites.so").c_str());
+    source_argv.push_back("-o");
+    source_argv.push_back(find_ins_out.c_str());
+    source_argv.push_back("--");
+    source_argv.push_back(Worker::source_config.bin_path.c_str());
     for (const auto &a : Worker::source_config.args)
     {   
-        if (a == "@@"){
-            oss << source_out << " ";
+        if (a == "$$"){
+            source_argv.push_back(source_out.c_str());
+        }else if (a == "@@"){
+            if (Worker::source_config.input_type == "None"){
+                perror("has \"@@\" and \"None\" input type\n");
+                return false;
+            }else if (Worker::source_config.input_type == "File"){
+                source_argv.push_back(Worker::source_config.seed_file.c_str());
+            }else{
+                abort();
+            }
         }else{
-            oss << a << " ";
+            source_argv.push_back(a.c_str());
         }
     }
-    oss << ">/dev/null 2>&1" << " ";
+    source_argv.push_back(0);
 
-    std::string cmd = oss.str();
-    //printf("cmd: %s\n", cmd.c_str());
-    if (system(cmd.c_str()) != 0) return false;
+    // envp
+    for (const auto &e : Worker::source_config.env)
+    {
+        source_envp.push_back(e.c_str());
+    }
+    source_envp.push_back(0);
+
+    // fork and run
+    int pid = fork();
+    if (pid == -1){
+        perror("fork failed!\n");
+        return false;
+    }else if(pid == 0){
+        // discard output
+        int null_fd = open("/dev/null", O_WRONLY);
+        if (null_fd < 0) perror("failed to open /dev/null!");
+        dup2(null_fd, STDOUT_FILENO);
+        dup2(null_fd, STDERR_FILENO);
+        close(null_fd);
+        if (Worker::source_config.input_type == "Stdin"){
+            int input_file_fd = open(Worker::source_config.seed_file.c_str(), O_RDONLY);
+            dup2(input_file_fd, STDIN_FILENO);
+            close(input_file_fd);
+        }
+        execve(source_argv[0], const_cast<char* const*>(source_argv.data()), const_cast<char* const*>(source_envp.data()));
+        perror("execve failed!");
+        exit(EXIT_FAILURE);
+    }
+
+    int status;
+    waitpid(pid, &status, 0);
+    if (WEXITSTATUS(status) != 0){
+        perror("find_patchpoints() failed!\n");
+        printf("Generator exited with status 0x%x.\n", WEXITSTATUS(status));
+        return false;
+    }
+
+    // std::ostringstream oss;
+    // for (const auto &e : Worker::source_config.env)
+    // {
+    //     oss << e << " ";
+    // }
+    // oss << Worker::pinbin_path << " ";
+    // oss << "-t" << " ";
+    // oss << Worker::pintool_path + "/obj-intel64/find_inst_sites.so" << " ";
+    // oss << "-o" << " ";
+    // oss << find_ins_out << " ";
+    // oss << "--" << " ";
+    // oss << Worker::source_config.bin_path << " ";
+    // for (const auto &a : Worker::source_config.args)
+    // {   
+    //     if (a == "$$"){
+    //         oss << source_out << " ";
+    //     }else{
+    //         oss << a << " ";
+    //     }
+    // }
+    // oss << ">/dev/null 2>&1" << " ";
+
+    // std::string cmd = oss.str();
+    // //printf("cmd: %s\n", cmd.c_str());
+    // if (system(cmd.c_str()) != 0) return false;
 
     /// FIXIT:hijack!
     //std::ifstream file("./output.asm");
@@ -187,6 +255,7 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
 
     if (!std::filesystem::remove(source_out)) std::cerr << "find pps: delete file source_out failed\n";
     if (!std::filesystem::remove(find_ins_out)) std::cerr << "find pps: delete file find_ins_out failed\n";
+    printf("[*] find %ld instructions.\n", patch_points.pps.size());
     
     return true;
 }
@@ -350,12 +419,20 @@ static bool load_config(const std::string &path){
         Worker::source_config.bin_path = data["generator"]["bin_path"];
         for (const auto &e : data["generator"]["args"])
             Worker::source_config.args.push_back(e);
+        Worker::source_config.input_type = data["generator"]["input_type"];
+        Worker::source_config.output_type = data["generator"]["output_type"];
+        Worker::source_config.seed_file = data["generator"]["seed_file"];
+        Worker::source_config.output_suffix = data["generator"]["output_suffix"];
+
         // consumer
         for (const auto &e : data["consumer"]["env"])
             consumer_config.env.push_back(e);
         consumer_config.bin_path = data["consumer"]["bin_path"];
         for (const auto &e : data["consumer"]["args"])
             consumer_config.args.push_back(e);
+        consumer_config.input_type = data["consumer"]["input_type"];
+        consumer_config.output_type = data["consumer"]["output_type"];
+
         // afl++
         afl_config.dir_in = data["afl++"]["dir_in"];
         afl_config.dir_out = data["afl++"]["dir_out"];
@@ -572,6 +649,8 @@ int main(int argc, char **argv){
     if (!with_afl){
         afl_envp.push_back("AFL_CUSTOM_MUTATOR_ONLY=1");
     }
+    afl_envp.push_back("AFL_SKIP_CPUFREQ=1");
+    
     // "AFL_CUSTOM_MUTATOR_LIBRARY=/home/proj/proj/src/afl_customut/inject_ts_multi2.so"
     std::string custom_mutator_env = "AFL_CUSTOM_MUTATOR_LIBRARY=" + afl_custom_mutator_path + "/inject_ts.so";
     afl_envp.push_back(custom_mutator_env.c_str());

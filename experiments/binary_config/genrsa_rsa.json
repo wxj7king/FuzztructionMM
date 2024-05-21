@@ -1,4 +1,4 @@
-{
+{   
     "generator": {
         "env" : [
             "LD_LIBRARY_PATH=/home/user/Fuzztrunction--/targets/openssl/vanilla/openssl/"
@@ -10,9 +10,13 @@
             "-passout",
             "pass:xxxxx",
             "-out",
-            "@@",
+            "$$",
             "512"
-        ]
+        ],
+        "input_type" : "None",
+        "output_type" : "File",
+        "seed_file" : "",
+        "output_suffix" : ""
     },
 
     "consumer": {
@@ -24,14 +28,16 @@
             "rsa",
             "-check",
             "-in",
-            "@@",
+            "$$",
             "-passin",
             "pass:xxxxx"
-        ]
+        ],
+        "input_type" : "File",
+        "output_type" : "None"
     },
 
     "afl++": {
         "dir_in" : "/home/user/Fuzztrunction--/targets/openssl/afl_in",
-        "dir_out" : "/home/user/Fuzztrunction--/targets/openssl/afl_in"
+        "dir_out" : "/home/user/Fuzztrunction--/targets/openssl/afl_out"
     }
 }

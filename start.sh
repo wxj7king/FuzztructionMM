@@ -12,8 +12,8 @@ function log_success {
     echo "${text_bold}${text_green}${1}${text_reset}"
 }
 
-container_name="ftmm"
-image_name="${container_name}:latest"
+container_name="ftmm-exp"
+image_name="${container_name}:fix_0.1"
 container="$(docker ps --filter="name=$container_name" --latest --quiet)"
 if [[ -n "$container" ]]; then
     # Connec to already running container
@@ -43,6 +43,7 @@ cmd="docker run -ti -d --privileged
     --ulimit msgqueue=2097152000
     --shm-size=16G
     --net=host
+    -v /home/proj/proj/fuzztruction/docker_exchange:/home/user/exchange
     --name $container_name "
 
 # if [[ ! -z "$SSH_AUTH_SOCK"  ]]; then
