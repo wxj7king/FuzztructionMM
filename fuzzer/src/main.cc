@@ -107,7 +107,8 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
     // argv
     source_argv.push_back(Worker::pinbin_path.c_str());
     source_argv.push_back("-t");
-    source_argv.push_back((Worker::pintool_path + "/obj-intel64/find_inst_sites.so").c_str());
+    std::string path_tmp = Worker::pintool_path + "/obj-intel64/find_inst_sites.so";
+    source_argv.push_back(path_tmp.c_str());
     source_argv.push_back("-o");
     source_argv.push_back(find_ins_out.c_str());
     source_argv.push_back("--");
@@ -344,7 +345,8 @@ static bool init(){
     // initialize message queue
     mq_unlink(MQNAME);
     Worker::my_mqattr.mq_flags = 0;
-    Worker::my_mqattr.mq_maxmsg = 30;
+    //Worker::my_mqattr.mq_maxmsg = 30;
+    Worker::my_mqattr.mq_maxmsg = 10;
     Worker::my_mqattr.mq_msgsize = sizeof(TestCase);
     Worker::my_mqattr.mq_curmsgs = 0;
     mqd_t tmp_mqd = mq_open(MQNAME, O_CREAT | O_EXCL,  0600, &Worker::my_mqattr);

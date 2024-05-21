@@ -76,7 +76,8 @@ my_mutator_t *afl_custom_init(afl_state_t *afl, unsigned int seed) {
     }
 
     data->my_mqattr.mq_flags = 0;
-    data->my_mqattr.mq_maxmsg = 30;
+    // data->my_mqattr.mq_maxmsg = 30;
+    data->my_mqattr.mq_maxmsg = 10;
     data->my_mqattr.mq_msgsize = sizeof(TestCase);
     data->my_mqattr.mq_curmsgs = 0;
     mqd_t mqd = mq_open (MQNAME, O_RDWR,  0600, &data->my_mqattr);

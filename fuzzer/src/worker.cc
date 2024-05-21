@@ -104,7 +104,8 @@ size_t Worker::get_iter(std::string out_dir, std::string addr_str, bool check_pt
     // argv
     source_argv.push_back(pinbin_path.c_str());
     source_argv.push_back("-t");
-    source_argv.push_back((pintool_path + "/obj-intel64/get_iter_num.so").c_str());
+    std::string path_tmp = pintool_path + "/obj-intel64/get_iter_num.so";
+    source_argv.push_back(path_tmp.c_str());
     source_argv.push_back("-addr");
     source_argv.push_back(addr_str.c_str());
     source_argv.push_back("-o");
