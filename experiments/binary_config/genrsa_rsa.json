@@ -16,7 +16,8 @@
         "input_type" : "None",
         "output_type" : "File",
         "seed_file" : "",
-        "output_suffix" : ""
+        "output_suffix" : "",
+        "input_suffix" : ""
     },
 
     "consumer": {

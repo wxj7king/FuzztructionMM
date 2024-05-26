@@ -179,19 +179,19 @@ uint32_t afl_custom_fuzz_count(my_mutator_t *data, const u8 *buf, size_t buf_siz
         return (uint32_t)(1024);
 }
 
-size_t afl_custom_post_process(my_mutator_t *data, unsigned char *in_buf, size_t buf_size, unsigned char **out_buf) {
-    size_t out_size = buf_size;
-    *out_buf = in_buf;
-    if (!data->success){
-        if (unlikely(strcmp(reinterpret_cast<const char*>(data->afl->stage_name), "Fuzztruction--") != 0)){
-            data->success = true;
-        }else{
-            *out_buf = NULL;
-            out_size = 0;
-        }
-    }
-    return out_size;
-}
+// size_t afl_custom_post_process(my_mutator_t *data, unsigned char *in_buf, size_t buf_size, unsigned char **out_buf) {
+//     size_t out_size = buf_size;
+//     *out_buf = in_buf;
+//     if (!data->success){
+//         if (unlikely(strcmp(reinterpret_cast<const char*>(data->afl->stage_name), "Fuzztruction--") != 0)){
+//             data->success = true;
+//         }else{
+//             *out_buf = NULL;
+//             out_size = 0;
+//         }
+//     }
+//     return out_size;
+// }
 
 const char *afl_custom_describe(my_mutator_t *data, size_t max_description_len){
     //printf("in describe!\n");
@@ -210,7 +210,9 @@ const char *afl_custom_describe(my_mutator_t *data, size_t max_description_len){
             strcat(ret, std::to_string(ts_ptr->multi_num).c_str());
         }
         //printf("addr: %lx, mut: %d\n", ts_ptr->patch_point.addr, ts_ptr->mut_type);
-    }
+    }else{           
+        strcat(ret, "origin");
+    }  
     return ret;
 }
 

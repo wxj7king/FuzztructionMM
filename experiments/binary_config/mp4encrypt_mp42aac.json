@@ -1,0 +1,43 @@
+{   
+    "generator": {
+        "env" : [
+            "LD_LIBRARY_PATH="
+        ],
+        "bin_path" : "/home/user/fuzztruction/fuzztruction-experiments/comparison-with-state-of-the-art/binaries/bento4/vanilla/bento4/cmakebuild/mp4encrypt",
+        "args" : [
+            "--method",
+            "OMA-PDCF-CBC",
+            "--key",
+            "1:edef8ba979d64acea3c827dcd51d21ed:random",
+            "--key",
+            "2:edef8ba979d64acea3c827dcd51d21ed:random",
+	    "@@",
+            "$$"
+        ],
+        "input_type" : "File",
+        "output_type" : "File",
+        "seed_file" : "/home/user/fuzztruction/fuzztruction-experiments/comparison-with-state-of-the-art/configurations/mp4encrypt_mp4aac/inputs_ft/sample-100ms.mp4",
+        "output_suffix" : ".mp4",
+        "input_suffix" : ".mp4"
+    },
+
+    "consumer": {
+        "env" : [
+            "LD_LIBRARY_PATH="
+        ],
+        "bin_path" : "/home/user/fuzztruction/fuzztruction-experiments/comparison-with-state-of-the-art/binaries/bento4/afl/bento4/cmakebuild/mp42aac",
+        "args" : [
+            "--key",
+            "edef8ba979d64acea3c827dcd51d21ed",
+            "@@",
+            "$$"
+        ],
+        "input_type" : "File",
+        "output_type" : "File"
+    },
+
+    "afl++": {
+        "dir_in" : "/home/user/ftmm_targets/mp4encrypt_mp42aac/afl_in",
+        "dir_out" : "/home/user/ftmm_targets/mp4encrypt_mp42aac/afl_out"
+    }
+}

@@ -97,6 +97,7 @@ typedef struct bin_config{
     std::string bin_path;
     std::vector<std::string> args;
     std::string input_type;
+    std::string input_suffix;
     std::string seed_file;
     std::string output_type;
     std::string output_suffix;

@@ -424,6 +424,7 @@ static bool load_config(const std::string &path){
         Worker::source_config.input_type = data["generator"]["input_type"];
         Worker::source_config.output_type = data["generator"]["output_type"];
         Worker::source_config.seed_file = data["generator"]["seed_file"];
+        Worker::source_config.input_suffix = data["generator"]["input_suffix"];
         Worker::source_config.output_suffix = data["generator"]["output_suffix"];
 
         // consumer

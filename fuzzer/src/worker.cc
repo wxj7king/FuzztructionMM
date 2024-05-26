@@ -159,8 +159,8 @@ size_t Worker::get_iter(std::string out_dir, std::string addr_str, bool check_pt
     int status;
     waitpid(pid, &status, 0);
     if (WEXITSTATUS(status) != 0){
-        perror("get_iter() failed!\n");
-        abort();
+        printf("get_iter() failed at %s!\n", addr_str.c_str());
+        return 0;
     }
 
     // std::ostringstream oss;
@@ -350,7 +350,8 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     auto duration = now.time_since_epoch();
     auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
     std::string timestamp = std::to_string(millis);
-    std::string out_file = work_dir + "/rsak_" + std::to_string(id) + "_" + timestamp + source_config.output_suffix;
+    std::string out_file = work_dir + "/source_out_" + std::to_string(id) + "_" + timestamp + source_config.output_suffix;
+    std::string in_file = "";
     std::vector<const char*> source_argv;
     std::vector<const char*> source_envp;
     TestCase testcase;
@@ -376,7 +377,9 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
         if (a == "$$"){
             source_argv.push_back(out_file.c_str());
         }else if (a == "@@"){
-            source_argv.push_back(source_config.seed_file.c_str());
+            in_file = work_dir + "/source_in_" + std::to_string(id) + "_" + timestamp + source_config.input_suffix;
+            std::filesystem::copy(source_config.seed_file, in_file);
+            source_argv.push_back(in_file.c_str());
         }else{
             source_argv.push_back(a.c_str());
         }
@@ -410,7 +413,7 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
         dup2(null_fd, STDERR_FILENO);
         close(null_fd);
         if (source_config.input_type == "Stdin"){
-            int input_file_fd = open(source_config.seed_file.c_str(), O_RDONLY);
+            int input_file_fd = open(in_file.c_str(), O_RDONLY);
             dup2(input_file_fd, STDIN_FILENO);
             close(input_file_fd);
         }
@@ -491,6 +494,9 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     if (fuzzer_timeout != 0){
         if (__glibc_unlikely(get_elapsed_seconds() > fuzzer_timeout))
             stop_soon = true;
+    }
+    if (in_file != ""){
+        if (!std::filesystem::remove(in_file)) std::cerr << "fuzz_one: delete input file failed\n";
     }
 
     return testcase;
@@ -894,6 +900,7 @@ void Worker::fuzz_candidates_2(){
 
 void Worker::save_interest_pps(){
     if (stop_soon) return;
+    if (cur_mut_count == 0) return;
     size_t *count_ptr = (size_t *)posix_shm.shm_base_ptr;
     size_t max_wait_s = 3;
     // wait for afl++ used all testcases this worker produced

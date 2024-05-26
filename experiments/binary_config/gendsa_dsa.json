@@ -1,0 +1,43 @@
+{   
+    "generator": {
+        "env" : [
+            "LD_LIBRARY_PATH=/home/user/fuzztruction/fuzztruction-experiments/comparison-with-state-of-the-art/binaries/openssl/vanilla/openssl"
+        ],
+        "bin_path" : "/home/user/fuzztruction/fuzztruction-experiments/comparison-with-state-of-the-art/binaries/openssl/vanilla/openssl/apps/openssl",
+        "args" : [
+            "gendsa",
+            "-passout",
+            "pass:xxxx",
+            "-des",
+            "-out",
+            "$$",
+            "@@"
+        ],
+        "input_type" : "File",
+        "output_type" : "File",
+        "seed_file" : "/home/user/fuzztruction/fuzztruction-experiments/comparison-with-state-of-the-art/configurations/gendsa_dsa/dsaparm_8bit",
+        "output_suffix" : "",
+        "input_suffix" : ""
+    },
+
+    "consumer": {
+        "env" : [
+            "LD_LIBRARY_PATH=/home/user/fuzztruction/fuzztruction-experiments/comparison-with-state-of-the-art/binaries/openssl/afl/openssl"
+        ],
+        "bin_path" : "/home/user/fuzztruction/fuzztruction-experiments/comparison-with-state-of-the-art/binaries/openssl/afl/openssl/apps/openssl",
+        "args" : [
+            "dsa",
+            "-in",
+            "@@",
+            "-passin",
+            "pass:xxxx"
+        ],
+        "input_type" : "File",
+        "output_type" : "None"
+    },
+
+    "afl++": {
+        "dir_in" : "/home/user/ftmm_targets/gendsa_dsa/afl_in",
+        "dir_out" : "/home/user/ftmm_targets/gendsa_dsa/afl_out"
+    }
+}
