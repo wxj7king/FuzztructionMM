@@ -219,8 +219,15 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
 
         del_idx = line.find(',');
         //printf("dd: %s, %d\n", line.c_str(), del_idx);
-        pp.addr = std::stoul(line.substr(0, del_idx), nullptr, 16); 
-        pp.reg_size = (uint8_t)std::stoul(line.substr(del_idx + 1, line.length()));
+        try
+        {
+            pp.addr = std::stoul(line.substr(0, del_idx), nullptr, 16); 
+            pp.reg_size = (uint8_t)std::stoul(line.substr(del_idx + 1, line.length()));
+        }
+        catch(const std::exception& e)
+        {
+            continue;
+        }
         /// skip jmp ins
         if (pp.reg_size == 32) continue;
         /// filter possible invalid ins
@@ -239,7 +246,15 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
                     assert(tmp_str.find("mov") != std::string::npos);
                     tmp_str = tmp_str.substr(tmp_str.find('@') + 1, tmp_str.length());
                     tmp_str = tmp_str.substr(0, tmp_str.find(','));
-                    found_mov_b4_jmp_addr = std::stoul(tmp_str, nullptr, 16); 
+                    try
+                    {
+                        found_mov_b4_jmp_addr = std::stoul(tmp_str, nullptr, 16); 
+                    }
+                    catch(const std::exception& e)
+                    {
+                        found_mov_b4_jmp_addr = 0;
+                    }
+                        
                     break;
                 }else{
                     /// skip mov ins that has a direct effect on its following cond jmp

@@ -197,13 +197,23 @@ size_t Worker::get_iter(std::string out_dir, std::string addr_str, bool check_pt
     std::ifstream file(get_iter_out);
     std::string result = "";
     std::getline(file, result);
-    size_t del_idx = 0;
+    size_t del_idx = 0, iter_num = 0, p_count = 0;
 
     result = result.substr(result.find(',') + 1, result.length());
     del_idx = result.find(',');
-    size_t iter_num = std::stoul(result.substr(0, del_idx));
-    size_t p_count = std::stoul(result.substr(del_idx + 1, result.length()));
-    //printf("%p,%lu,%lu\n", (void *)std::stoul(addr_str), iter_num, p_count);
+    try
+    {
+        iter_num = std::stoul(result.substr(0, del_idx));
+        p_count = std::stoul(result.substr(del_idx + 1, result.length()));
+        //printf("%p,%lu,%lu\n", (void *)std::stoul(addr_str), iter_num, p_count);
+    }
+    catch(const std::exception& e)
+    {
+        std::cerr << e.what() << '\n';
+        iter_num = 0;
+        p_count = 0;
+    }
+    
     if (p_count != 0) is_pointer = true;
     else is_pointer = false;
 
@@ -386,10 +396,22 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     }
     source_argv.push_back(0);
     // fill envp
+    std::vector<std::string> tmp_source_env = source_config.env;
     for (const auto &e : source_config.env)
-    {
-        source_envp.push_back(e.c_str());
-    }
+    {                
+        std::string env_value = e.substr(e.find('=') + 1);
+        std::string env_name = e.substr(0, e.find('='));
+        if (std::filesystem::is_regular_file(env_value)){
+            std::filesystem::path tmp_path = env_value;
+            std::string new_env_file = work_dir + "/" + tmp_path.filename().string();
+            std::string new_env = env_name + "=" + new_env_file;
+            tmp_source_env.push_back(new_env);
+            std::filesystem::copy(env_value, new_env_file, std::filesystem::copy_options::overwrite_existing);
+            source_envp.push_back(tmp_source_env.back().c_str());
+        }else{
+            source_envp.push_back(e.c_str());
+        }           
+    } 
     source_envp.push_back(0);
     
     // printf("%d: cmd: ", id);
