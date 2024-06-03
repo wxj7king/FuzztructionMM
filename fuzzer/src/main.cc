@@ -20,7 +20,7 @@
 #include "include/nlohmann/json.hpp"
 
 // global variables
-static pid_t afl_pid;
+static pid_t afl_pid[2] = {0};
 static pid_t worker_pid;
 static std::vector<pthread_t> threads;
 static std::vector<ThreadArg> targs;
@@ -49,8 +49,12 @@ static std::string aflpp_path = "";
 static std::string afl_custom_mutator_path = "";
 
 void main_sig_handler(int sig){
-    kill(afl_pid, SIGKILL);
-    waitpid(afl_pid, 0, 0);
+    for (size_t i = 0; i < 2; i++){   
+        if (afl_pid[i]){
+            kill(afl_pid[i], SIGKILL);
+            waitpid(afl_pid[i], 0, 0);
+        }
+    }
 
     kill(worker_pid, SIGINT);
     waitpid(worker_pid, 0, 0);
@@ -331,6 +335,7 @@ static void child_process(){
     Worker::source_unfuzzed_pps.pps = Worker::source_pps.pps;
     Worker::source_unfuzzed_pps_branch.pps = Worker::source_pps_branch.pps;
     Worker::start_time = std::chrono::high_resolution_clock::now();
+    Worker::is_master = with_afl ? false : true;
 
     for (size_t i = 0; i < num_thread; i++){
         targs[i].tid = i;
@@ -702,56 +707,70 @@ int main(int argc, char **argv){
     signal(SIGTERM, main_sig_handler);
     atexit(at_exit);
 
-    std::vector<const char*> afl_envp;
-    std::vector<const char*> afl_argv;
+    for (size_t i = 0; i < 2; i++){
+        if (!with_afl && i == 1) break;
 
-    // fill argv
-    std::string afl_fuzz_path = aflpp_path + "/afl-fuzz";
-    afl_argv.push_back(afl_fuzz_path.c_str());
-    afl_argv.push_back("-i");
-    afl_argv.push_back(afl_config.dir_in.c_str());
-    afl_argv.push_back("-o");
-    afl_argv.push_back(afl_config.dir_out.c_str());
-    afl_argv.push_back("--");
-    afl_argv.push_back(consumer_config.bin_path.c_str());
-    for (const auto &a : consumer_config.args)
-    {
-        afl_argv.push_back(a.c_str());
-    }
-    afl_argv.push_back(0);
-    
-    // fill envp
-    if (!with_afl){
-        afl_envp.push_back("AFL_CUSTOM_MUTATOR_ONLY=1");
-    }
-    afl_envp.push_back("AFL_SKIP_CPUFREQ=1");
-    
-    // "AFL_CUSTOM_MUTATOR_LIBRARY=/home/proj/proj/src/afl_customut/inject_ts_multi2.so"
-    std::string custom_mutator_env = "AFL_CUSTOM_MUTATOR_LIBRARY=" + afl_custom_mutator_path + "/inject_ts.so";
-    afl_envp.push_back(custom_mutator_env.c_str());
-    /// TODO: really need this?
-    for (const auto &e : consumer_config.env)
-    {
-        afl_envp.push_back(e.c_str());
-    }
-    afl_envp.push_back(0);
+        std::vector<const char*> afl_envp;
+        std::vector<const char*> afl_argv;
+        std::string custom_mutator_env = "";
+        // fill argv
+        std::string afl_fuzz_path = aflpp_path + "/afl-fuzz";
+        afl_argv.push_back(afl_fuzz_path.c_str());
+        afl_argv.push_back("-i");
+        afl_argv.push_back(afl_config.dir_in.c_str());
+        afl_argv.push_back("-o");
+        afl_argv.push_back(afl_config.dir_out.c_str());
+        if (i == 0)
+            afl_argv.push_back("-Mmaster");
+        else if (i == 1)
+            afl_argv.push_back("-Sslave");
+        else
+            abort();
+        afl_argv.push_back("--");
+        afl_argv.push_back(consumer_config.bin_path.c_str());
+        for (const auto &a : consumer_config.args)
+        {
+            afl_argv.push_back(a.c_str());
+        }
+        afl_argv.push_back(0);
+        
+        // fill envp
+        if (!with_afl || (with_afl && i == 1)){
+            afl_envp.push_back("AFL_CUSTOM_MUTATOR_ONLY=1");
+            custom_mutator_env = "AFL_CUSTOM_MUTATOR_LIBRARY=" + afl_custom_mutator_path + "/inject_ts.so";
+            afl_envp.push_back(custom_mutator_env.c_str());
+        }
+        // when slave node is our afl++ instance
+        if (i == 1){
+            afl_envp.push_back("AFL_NO_UI=1");
+        }
+        afl_envp.push_back("AFL_SKIP_CPUFREQ=1");
+        for (const auto &e : consumer_config.env)
+        {
+            afl_envp.push_back(e.c_str());
+        }
+        afl_envp.push_back(0);
 
-    afl_pid = fork();
+        // fork afl++ instance
+        afl_pid[i] = fork();
+        if (afl_pid[i] < 0){
+            perror("fork()");
+            return -1;
+        }else if(afl_pid[i] == 0){
+            // discard outputs of slave afl++ instance
+            if (i == 1){
+                int null_fd = open("/dev/null", O_WRONLY);
+                if (null_fd < 0) perror("failed to open /dev/null!");
+                dup2(null_fd, STDOUT_FILENO);
+                dup2(null_fd, STDERR_FILENO);
+                close(null_fd);
+            }
+            execve(afl_argv[0], const_cast<char* const*>(afl_argv.data()), const_cast<char* const*>(afl_envp.data()));
+            perror("execve failed!\n");
+        }
+    }
+    
     int status;
-    if (afl_pid < 0){
-        perror("fork()");
-        return -1;
-    }else if(afl_pid == 0){
-        // int null_fd = open("/dev/null", O_WRONLY);
-        // if (null_fd < 0) perror("failed to open /dev/null!");
-        // dup2(null_fd, STDOUT_FILENO);
-        // dup2(null_fd, STDERR_FILENO);
-        // close(null_fd);
-
-        execve(afl_argv[0], const_cast<char* const*>(afl_argv.data()), const_cast<char* const*>(afl_envp.data()));
-        perror("execve failed!\n");
-    }
-    
     // child_process();
     waitpid(worker_pid, &status, 0);
     if (WIFEXITED(status)){
@@ -760,8 +779,12 @@ int main(int argc, char **argv){
     }
     else if (WIFSIGNALED(status)) printf("Worker process with PID %ld has been terminated by signal %d .\n", (long)worker_pid, WTERMSIG(status));
 
-    kill(afl_pid, SIGKILL);
-    waitpid(afl_pid, &status, 0);
+    for (size_t i = 0; i < 2; i++){   
+        if (afl_pid[i]){
+            kill(afl_pid[i], SIGKILL);
+            waitpid(afl_pid[i], &status, 0);
+        }
+    }
     reap_resources();
     return 0;
 

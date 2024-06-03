@@ -18,11 +18,8 @@ typedef struct patch_point{
     ADDRINT addr;
     // UINT64 iter_total;
 } Patchpoint;
-typedef std::vector<Patchpoint> Patchpoints;
-
 std::set<std::string> lib_blacklist;
-static Patchpoints patch_points;
-static Patchpoints patch_points_uninst;
+static Patchpoint first_patch_point;
 static BOOL detach_flag = false;
 
 // static UINT8 *flags_val = NULL;
@@ -31,11 +28,24 @@ static std::map<ADDRINT, UINT16> pp2flag_msk;
 //static UINT16 flags_val = 0;
 //static UINT16 control_flag_msk = 0;
 
+static std::random_device rd;
+static std::mt19937 gen(rd()); // Mersenne Twister engine
+static std::uniform_int_distribution<> dist_true_or_false(0, 1);
+static size_t ins2instr;
+static int instrument_with_prob;
+static int flip_with_prob;
+static std::set<ADDRINT> seen_ins;
+static bool next_flag = false;
+
 KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify addrs of instructions");
-// KNOB<std::string> KnobNewIterNum(KNOB_MODE_WRITEONCE, "pintool", "iter", "0", "specify how iteration this ins will be executed in a loop");
-// KNOB<std::string> KnobNewNextBr(KNOB_MODE_WRITEONCE, "pintool", "n", "0", "next branch to flip");
+KNOB<std::string> KnobInstr(KNOB_MODE_WRITEONCE, "pintool", "i", "0", "specify whether to instrument a ins with half probability");
+KNOB<std::string> KnobFlip(KNOB_MODE_WRITEONCE, "pintool", "f", "0", "specify whether to flip a branch with half probability on one hit");
+KNOB<std::string> KnobNumIns(KNOB_MODE_WRITEONCE, "pintool", "n", "1", "specify the number of instructions to instrument");
 
 VOID BranchFlip_SingleFlag(ADDRINT Ip, CONTEXT *ctx){
+    if (flip_with_prob){
+        if (!dist_true_or_false(gen)) return;
+    }
     PIN_GetContextRegval(ctx, REG_FLAGS, reinterpret_cast<UINT8 *>(&(pp2flag_val[Ip])));
     // printf("branch flip at %p\n", (void *)Ip);
     pp2flag_val[Ip] ^= pp2flag_msk[Ip];
@@ -44,6 +54,9 @@ VOID BranchFlip_SingleFlag(ADDRINT Ip, CONTEXT *ctx){
 
 // CF = 1 or ZF = 1 OR CF = 0 and ZF = 0
 VOID BranchFlip_MultiFlags_1(ADDRINT Ip, CONTEXT *ctx){
+    if (flip_with_prob){
+        if (!dist_true_or_false(gen)) return;
+    }
     PIN_GetContextRegval(ctx, REG_FLAGS, reinterpret_cast<UINT8 *>(&(pp2flag_val[Ip])));
     // printf("branch flip at %p\n", (void *)Ip);
     if ((pp2flag_val[Ip] & 0x0001) || (pp2flag_val[Ip] & 0x0040)){
@@ -57,6 +70,9 @@ VOID BranchFlip_MultiFlags_1(ADDRINT Ip, CONTEXT *ctx){
 
 // ZF = 1 or SF <> OF OR ZF = 0 and SF = OF
 VOID BranchFlip_MultiFlags_2(ADDRINT Ip, CONTEXT *ctx){
+    if (flip_with_prob){
+        if (!dist_true_or_false(gen)) return;
+    }
     PIN_GetContextRegval(ctx, REG_FLAGS, reinterpret_cast<UINT8 *>(&(pp2flag_val[Ip])));
     // printf("branch flip at %p\n", (void *)Ip);
     if ( (pp2flag_val[Ip] & 0x0040) || ((pp2flag_val[Ip] & 0x0080) && !(pp2flag_val[Ip] & 0x0800)) || (!(pp2flag_val[Ip] & 0x0080) && (pp2flag_val[Ip] & 0x0800)) ){
@@ -101,11 +117,15 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
 {
 
     ADDRINT addr_offset = (INS_Address(ins) - baseAddr);
-    auto it = std::find_if(patch_points_uninst.begin(), patch_points_uninst.end(), [=](const Patchpoint& pp){return pp.addr == addr_offset;});
-    if (it == patch_points_uninst.end()) return;
-    patch_points_uninst.erase(it);
-    if (patch_points_uninst.empty()) detach_flag = true;
+    if (addr_offset != first_patch_point.addr && !next_flag) return;
     if (!IsValidBranchIns(ins)) return;
+    if (seen_ins.count(addr_offset) == 1) return;
+    seen_ins.insert(addr_offset);
+    if (addr_offset == first_patch_point.addr) next_flag = true;
+    
+    if (instrument_with_prob){
+        if (!dist_true_or_false(gen)) return;
+    }
 
     REG reg2mut = REG_FLAGS;
     REGSET regsetIn, regsetOut;
@@ -186,6 +206,11 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
     }
     pp2flag_val[addr_offset] = 0;
 
+    if (pp2flag_val.size() >= ins2instr){
+        detach_flag = true;
+        next_flag = false;
+    }
+
 }
 
 const char* StripPath(const char* path)
@@ -230,20 +255,6 @@ INT32 Usage()
     return -1;
 }
 
-std::vector<std::string> get_tokens(std::string args, std::string del){
-    size_t pos_s = 0;
-    size_t pos_e;
-    std::string token;
-    std::vector<std::string> vec;
-    while((pos_e = args.find(del, pos_s)) != std::string::npos){
-        token = args.substr(pos_s, pos_e - pos_s);
-        pos_s = pos_e + del.length();
-        vec.push_back(token);
-    }
-    vec.push_back(args.substr(pos_s));
-    return vec;
-}
-
 BOOL Init(){
     if (KnobNewAddr.Value() == "") return false;
 
@@ -251,16 +262,15 @@ BOOL Init(){
     lib_blacklist.insert("[vdso]");
     lib_blacklist.insert("libc.so.6");
 
-    std::vector<std::string> addrs = get_tokens(KnobNewAddr.Value(), ",");
-    if (addrs.empty()) return false;
+    first_patch_point.addr = Uint64FromString(KnobNewAddr.Value());
+    instrument_with_prob = std::stoul(KnobInstr.Value());
+    flip_with_prob = std::stoul(KnobFlip.Value());
+    ins2instr = std::stoul(KnobNumIns.Value());
+    if (!first_patch_point.addr) return false;
 
-    for (size_t i = 0; i < addrs.size(); i ++){
-        Patchpoint pp;
-        pp.addr = Uint64FromString(addrs[i]);
-        patch_points.push_back(pp);
-        std::cout << "pp: " << pp.addr <<  std::endl;
-    }
-    patch_points_uninst = patch_points;
+    std::cout << "[*]Start from first pp: " << first_patch_point.addr << ", selected " << ins2instr << " additional pps" << std::endl;
+    std::cout << "[*]instrument mode: " << instrument_with_prob << ", flip mode: " << flip_with_prob << std::endl;
+
     return true;
 }
 

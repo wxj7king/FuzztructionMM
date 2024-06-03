@@ -387,8 +387,7 @@ void Worker::generate_testcases_branch(){
     if (source_unfuzzed_pps_branch.pps.empty())
     {   
         // std::lock_guard<std::mutex> lock(source_pps_branch.mutex);
-        std::uniform_int_distribution<size_t> dist_br_num(2, std::min(source_pps_branch.pps.size(), max_pps_one_mut_branch));
-        real_select = dist_br_num(gen);
+        real_select = std::min(source_pps_branch.pps.size(), new_selection_config.random_num);
         Patchpoints tmp_source_pps_branch = source_pps_branch.pps;
         std::shuffle(tmp_source_pps_branch.begin(), tmp_source_pps_branch.end(), gen);
         
@@ -397,7 +396,7 @@ void Worker::generate_testcases_branch(){
         }
     }
 
-    oss << "a combination of " <<  selected_pps.random_pps.size() << "/" << new_selection_config.random_num << " random pps";
+    oss << " " <<  selected_pps.random_pps.size() << "/" << new_selection_config.random_num << " random branch pps";
 
     output_log(oss.str());
     //printf("%s\n", oss.str().c_str());
@@ -930,18 +929,16 @@ void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
 
 }
 
-void Worker::mutations_branch(const Patchpoints &pps){
+void Worker::mutations_branch(const Patchpoint &pp, int mut_type){
     if (stop_soon) return;
     PintoolArgs pintool_args;
-    std::string addrs_str = "";
-    
-    if (pps.size() == 1){
+    pintool_args["-addr"] = std::to_string(pp.addr);
+
+    if (mut_type == BRANCH_FLIP){
         if (stop_soon) return;
         branch_flip_type = 1;
-        pintool_args["-addr"] = std::to_string(pps[0].addr);
-        pintool_args["-iter"] = std::to_string(addr2iter_branch.map[pps[0].addr]);
         pintool_args["-n"] = "0";
-        TestCase ts = fuzz_one(pintool_args, pps[0]);
+        TestCase ts = fuzz_one(pintool_args, pp);
         ts.mut_type = BRANCH_FLIP;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
         if (ts.filename[0] == '\0'){
@@ -950,21 +947,47 @@ void Worker::mutations_branch(const Patchpoints &pps){
             for (size_t i = 1; i <= 10; i++)
             {
                 pintool_args["-n"] = std::to_string(i);
-                ts = fuzz_one(pintool_args, pps[0]);
+                ts = fuzz_one(pintool_args, pp);
                 ts.mut_type = BRANCH_FLIP_NEXT;
                 mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
             }
         }
 
-    }else{// combination
+    }else if (mut_type == BRANCH_FLIP_MULTI){// combination
         if (stop_soon) return;
         branch_flip_type = 2;
-        for (size_t i = 0; i < pps.size(); i++){
-            addrs_str += (std::to_string(pps[i].addr) + ",");
-        }
-        addrs_str.pop_back();
-        pintool_args["-addr"] = addrs_str;
-        TestCase ts = fuzz_one(pintool_args, pps[0]);
+        thread_local std::random_device rd;
+        thread_local std::mt19937 gen(rd()); // Mersenne Twister engine
+        static std::uniform_int_distribution<> dist_ins2instr(1, 10);
+        // randomly generate the number of branch instructions to flip
+        pintool_args["-n"] = std::to_string(dist_ins2instr(gen));
+        
+        // instrument with half probability
+        // flip branch with half probability on a single hit for one instrument instruction
+        pintool_args["-i"] = "1";
+        pintool_args["-f"] = "1";
+        TestCase ts = fuzz_one(pintool_args, pp);
+        ts.mut_type = BRANCH_FLIP_MULTI;
+        mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+
+        // only instrument with half probability
+        pintool_args["-i"] = "1";
+        pintool_args["-f"] = "0";
+        ts = fuzz_one(pintool_args, pp);
+        ts.mut_type = BRANCH_FLIP_MULTI;
+        mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+
+        // only flip branch with half probability
+        pintool_args["-i"] = "0";
+        pintool_args["-f"] = "1";
+        ts = fuzz_one(pintool_args, pp);
+        ts.mut_type = BRANCH_FLIP_MULTI;
+        mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+
+        // always instrument found ins and flip branch
+        pintool_args["-i"] = "0";
+        pintool_args["-f"] = "0";
+        ts = fuzz_one(pintool_args, pp);
         ts.mut_type = BRANCH_FLIP_MULTI;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
     }
@@ -1030,25 +1053,17 @@ void Worker::fuzz_candidates_multi(){
 void Worker::fuzz_candidates_branch(){
     if (stop_soon) return;
     // unfuzzed patchpoints
-    bool check_ptr = false, is_pointer = false;
     for (size_t i = 0; i < selected_pps.unfuzzed_pps.size(); i++){
         if (stop_soon) return;
-        {
-            std::lock_guard<std::mutex> lock(addr2iter_branch.mutex);
-            if (addr2iter_branch.map.count(selected_pps.unfuzzed_pps[i].addr) == 0) {
-                addr2iter_branch.map[selected_pps.unfuzzed_pps[i].addr] = get_iter(work_dir, std::to_string(selected_pps.unfuzzed_pps[i].addr), check_ptr, is_pointer);
-                //printf("pp: %p, iter: %ld\n", (void *)pp.addr, num_iter);
-            }
-        }
-        Patchpoints tmp_pps;
-        tmp_pps.push_back(selected_pps.unfuzzed_pps[i]);
-        mutations_branch(tmp_pps);
+        mutations_branch(selected_pps.unfuzzed_pps[i], BRANCH_FLIP);
     }
 
     // random patchpoints combination
     if (!selected_pps.random_pps.empty()){
-        if (stop_soon) return;
-        mutations_branch(selected_pps.random_pps);
+        for (size_t i = 0; i < selected_pps.random_pps.size(); i++){
+            if (stop_soon) return;
+            mutations_branch(selected_pps.random_pps[i], BRANCH_FLIP_MULTI);
+        }
     }
     // clear records
     size_t *count_ptr = (size_t *)posix_shm.shm_base_ptr;
@@ -1074,9 +1089,15 @@ void Worker::save_interest_pps(){
     
     std::string afl_output_dir = afl_config.dir_out;
     std::vector<std::string> sub_dirs;
-    sub_dirs.push_back("/default/queue");
-    sub_dirs.push_back("/default/crashes");
-    sub_dirs.push_back("/default/hangs");
+    if (is_master){
+        sub_dirs.push_back("/master/queue");
+        sub_dirs.push_back("/master/crashes");
+        sub_dirs.push_back("/master/hangs");
+    }else{
+        sub_dirs.push_back("/slave/queue");
+        sub_dirs.push_back("/slave/crashes");
+        sub_dirs.push_back("/slave/hangs");
+    }
     std::string ftmm_file = "addr";
     //std::string new_cov_file = "+cov";
     for (const auto & sub_dir : sub_dirs){

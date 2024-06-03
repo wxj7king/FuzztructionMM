@@ -13,7 +13,6 @@ public:
     static inline Patchpointslock source_pps_branch;
     static inline Patchpointslock source_unfuzzed_pps_branch;
     static inline Addr2iter addr2iter;
-    static inline Addr2iter addr2iter_branch;
     static inline PpsSetLock interest_pps;
     static inline PpsMultiSetLock interest_pps_multi;
     static inline std::mutex log_mtx;
@@ -48,6 +47,7 @@ public:
     }global_mutations_count;
     static inline std::string pintool_path;
     static inline std::string pinbin_path;
+    static inline bool is_master;
 
     // func
     Worker(int _id);
@@ -65,7 +65,7 @@ public:
     TestCase fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp);
     void mutations_one(const Patchpoint &pp, int mut_type);
     void mutations_multi(const Patchpoints &pps, int mut_type);
-    void mutations_branch(const Patchpoints &pps);
+    void mutations_branch(const Patchpoint &pp, int mut_type);
     void fuzz_candidates_one();
     void fuzz_candidates_multi();
     void fuzz_candidates_branch();

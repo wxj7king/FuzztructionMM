@@ -16,12 +16,10 @@ using std::hex;
 
 typedef struct patch_point{
     ADDRINT addr;
-    UINT64 iter_total;
 } Patchpoint;
 std::set<std::string> lib_blacklist;
 static Patchpoint patch_point;
 static BOOL detach_flag = false;
-static UINT64 cur_iter = 0;
 static std::set<ADDRINT> inst_set;
 static BOOL next_flag = false;
 static size_t next_br_idx = 0;
@@ -37,23 +35,17 @@ std::mt19937 gen(rd()); // Mersenne Twister engine
 std::uniform_int_distribution<UINT8> dist_idx;
 
 KNOB<std::string> KnobNewAddr(KNOB_MODE_WRITEONCE, "pintool", "addr", "0", "specify addrs of instructions");
-KNOB<std::string> KnobNewIterNum(KNOB_MODE_WRITEONCE, "pintool", "iter", "0", "specify how iteration this ins will be executed in a loop");
 KNOB<std::string> KnobNewNextBr(KNOB_MODE_WRITEONCE, "pintool", "n", "0", "next branch to flip");
 
 VOID BranchFlip_SingleFlag(ADDRINT Ip, CONTEXT *ctx){
-    // printf("curr iter %ld\n", cur_iter);
     PIN_GetContextRegval(ctx, REG_FLAGS, reinterpret_cast<UINT8 *>(&flags_val));
     // printf("branch flip at %p\n", (void *)Ip);
     flags_val ^= control_flag_msk;
     PIN_SetContextRegval(ctx, REG_FLAGS, reinterpret_cast<UINT8 *>(&flags_val));
-    cur_iter++;
-    if (cur_iter >= patch_point.iter_total && next_br_idx == 0)
-        PIN_Detach();
 }
 
 // CF = 1 or ZF = 1 OR CF = 0 and ZF = 0
 VOID BranchFlip_MultiFlags_1(ADDRINT Ip, CONTEXT *ctx){
-    // printf("curr iter %ld\n", cur_iter);
     PIN_GetContextRegval(ctx, REG_FLAGS, reinterpret_cast<UINT8 *>(&flags_val));
     // printf("branch flip at %p\n", (void *)Ip);
     if ((flags_val & 0x0001) || (flags_val & 0x0040)){
@@ -62,16 +54,11 @@ VOID BranchFlip_MultiFlags_1(ADDRINT Ip, CONTEXT *ctx){
     }else{
         flags_val ^= 0x0001;
     }
-    
     PIN_SetContextRegval(ctx, REG_FLAGS, reinterpret_cast<UINT8 *>(&flags_val));
-    cur_iter++;
-    if (cur_iter >= patch_point.iter_total && next_br_idx == 0)
-        PIN_Detach();
 }
 
 // ZF = 1 or SF <> OF OR ZF = 0 and SF = OF
 VOID BranchFlip_MultiFlags_2(ADDRINT Ip, CONTEXT *ctx){
-    // printf("curr iter %ld\n", cur_iter);
     PIN_GetContextRegval(ctx, REG_FLAGS, reinterpret_cast<UINT8 *>(&flags_val));
     // printf("branch flip at %p\n", (void *)Ip);
     if ( (flags_val & 0x0040) || ((flags_val & 0x0080) && !(flags_val & 0x0800)) || (!(flags_val & 0x0080) && (flags_val & 0x0800)) ){
@@ -82,9 +69,6 @@ VOID BranchFlip_MultiFlags_2(ADDRINT Ip, CONTEXT *ctx){
         flags_val ^= 0x0040;
     }
     PIN_SetContextRegval(ctx, REG_FLAGS, reinterpret_cast<UINT8 *>(&flags_val));
-    cur_iter++;
-    if (cur_iter >= patch_point.iter_total && next_br_idx == 0)
-        PIN_Detach();
 }
 
 BOOL IsValidBranchIns(INS ins){
@@ -120,10 +104,10 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
     
     ADDRINT addr_offset = (INS_Address(ins) - baseAddr);
     if (patch_point.addr != addr_offset && !next_flag) return;
+    if (!IsValidBranchIns(ins)) return;
     if (inst_set.count(addr_offset) == 1) return;
     inst_set.insert(addr_offset);
 
-    if (!IsValidBranchIns(ins)) return;
     if (next_flag){
         if (next_br_idx_count != next_br_idx){
             next_br_idx_count++;
@@ -254,8 +238,6 @@ VOID InstrumentTrace(TRACE trace, VOID *v){
     }
 }
 
-void Detatched(VOID *v){std::cerr << endl << "Detached from pintool!" << endl;}
-
 void Fini(INT32 code, void *v){
 	// printf("read counts: %ld\n", read_count);
     // printf("write counts: %ld\n", write_count);
@@ -273,17 +255,16 @@ INT32 Usage()
 }
 
 BOOL Init(){
-    if (KnobNewAddr.Value() == "" || KnobNewIterNum.Value() == "") return false;
+    if (KnobNewAddr.Value() == "") return false;
 
     lib_blacklist.insert("ld-linux-x86-64.so.2");
     lib_blacklist.insert("[vdso]");
     lib_blacklist.insert("libc.so.6");
 
     patch_point.addr = Uint64FromString(KnobNewAddr.Value());
-    patch_point.iter_total = std::stoul(KnobNewIterNum.Value());
     next_br_idx = std::stoul(KnobNewNextBr.Value());
 
-    printf("pp: %p, %ld, %ld\n", (void *)patch_point.addr, patch_point.iter_total, next_br_idx);
+    printf("pp: %p, %ld\n", (void *)patch_point.addr, next_br_idx);
 
     return true;
 }
@@ -296,7 +277,6 @@ int main(INT32 argc, CHAR* argv[])
     //INS_AddInstrumentFunction(InstrumentIns, 0);
     TRACE_AddInstrumentFunction(InstrumentTrace, 0);
     PIN_AddFiniFunction(Fini, 0);
-    PIN_AddDetachFunction(Detatched, 0);
     PIN_StartProgram();
     return 0;
 }
