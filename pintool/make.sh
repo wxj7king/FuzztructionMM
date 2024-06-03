@@ -1,7 +1,7 @@
 #/bin/bash
 
-#export PIN_ROOT=/home/user/pin-3.28-98749-g6643ecee5-gcc-linux/
-export PIN_ROOT=$pin_root
+export PIN_ROOT=/home/proj/proj/tools/pin-3.28-98749-g6643ecee5-gcc-linux/
+#export PIN_ROOT=$pin_root
 
 if [ "$#" -eq 0 ]; then
     make

@@ -28,7 +28,10 @@ enum MUTATION_TYPE{
     RANDOM_BYTE_MULTI,
     RANDOM_BYTE0_MULTI,
     U8ADD_MULTI,
-    HAVOC_MULTI
+    HAVOC_MULTI,
+    BRANCH_FLIP,
+    BRANCH_FLIP_NEXT,
+    BRANCH_FLIP_MULTI
 };
 
 Worker::Worker(int _id) : id(_id) { 
@@ -37,6 +40,10 @@ Worker::Worker(int _id) : id(_id) {
     total_mutations_count = 0;
 }
 Worker::~Worker(){}
+
+void Worker::set_level(int l){
+    level = l;
+}
 
 std::string Worker::sha256(const std::string &file_path){
     unsigned char hash[SHA256_DIGEST_LENGTH];
@@ -254,8 +261,8 @@ void Worker::generate_testcases(){
 
     size_t res = new_selection_config.interest_num + new_selection_config.random_num + new_selection_config.unfuzzed_num;
     size_t real_select;
-    std::random_device rd;
-    std::mt19937 gen(rd()); // Mersenne Twister engine
+    thread_local std::random_device rd;
+    thread_local std::mt19937 gen(rd()); // Mersenne Twister engine
     std::ostringstream oss;
 
     if (!source_unfuzzed_pps.pps.empty()){
@@ -285,7 +292,7 @@ void Worker::generate_testcases(){
     
     if (source_unfuzzed_pps.pps.empty())
     {   
-        std::lock_guard<std::mutex> lock(source_pps.mutex);
+        // std::lock_guard<std::mutex> lock(source_pps.mutex);
         //std::uniform_int_distribution<size_t> dist_idx(0, source_pps.pps.size() - 1);
         real_select = std::min(source_pps.pps.size(), res);
         Patchpoints tmp_source_pps = source_pps.pps;
@@ -309,8 +316,8 @@ void Worker::generate_testcases_multi(){
     selected_pps_multi.unfuzzed_pps.pps.clear();
     selected_pps_multi.interest_pps.pps.clear();
 
-    std::random_device rd;
-    std::mt19937 gen(rd()); // Mersenne Twister engine
+    thread_local std::random_device rd;
+    thread_local std::mt19937 gen(rd()); // Mersenne Twister engine
     std::ostringstream oss;
 
     {
@@ -355,6 +362,47 @@ void Worker::generate_testcases_multi(){
     //printf("%s\n", oss.str().c_str());
 }
 
+void Worker::generate_testcases_branch(){
+    if (stop_soon) return;
+    selected_pps.unfuzzed_pps.clear();
+    selected_pps.random_pps.clear();
+
+    size_t real_select;
+    thread_local std::random_device rd;
+    thread_local std::mt19937 gen(rd()); // Mersenne Twister engine
+    std::ostringstream oss;
+
+    if (!source_unfuzzed_pps_branch.pps.empty()){
+        std::lock_guard<std::mutex> lock(source_unfuzzed_pps_branch.mutex);
+        real_select = std::min(source_unfuzzed_pps_branch.pps.size(), new_selection_config.unfuzzed_num);
+        for (size_t i = 0; i < real_select; i++){
+            selected_pps.unfuzzed_pps.push_back(source_unfuzzed_pps_branch.pps[i]);
+        }
+        source_unfuzzed_pps_branch.pps.erase(source_unfuzzed_pps_branch.pps.begin(), source_unfuzzed_pps_branch.pps.begin() + real_select);
+        oss << "[*] Id: " << id << " Selected " << selected_pps.unfuzzed_pps.size() << "/" << new_selection_config.unfuzzed_num << " unfuzzed branch pps, ";
+    }else{
+        oss << "[*] Id: " << id << " Selected " << "0/0" << " branch unfuzzed pps, ";
+    }
+    
+    if (source_unfuzzed_pps_branch.pps.empty())
+    {   
+        // std::lock_guard<std::mutex> lock(source_pps_branch.mutex);
+        std::uniform_int_distribution<size_t> dist_br_num(2, std::min(source_pps_branch.pps.size(), max_pps_one_mut_branch));
+        real_select = dist_br_num(gen);
+        Patchpoints tmp_source_pps_branch = source_pps_branch.pps;
+        std::shuffle(tmp_source_pps_branch.begin(), tmp_source_pps_branch.end(), gen);
+        
+        for (size_t i = 0; i < real_select; i++){
+            selected_pps.random_pps.push_back(tmp_source_pps_branch[i]);
+        }
+    }
+
+    oss << "a combination of " <<  selected_pps.random_pps.size() << "/" << new_selection_config.random_num << " random pps";
+
+    output_log(oss.str());
+    //printf("%s\n", oss.str().c_str());
+}
+
 TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     auto now = std::chrono::system_clock::now();
     auto duration = now.time_since_epoch();
@@ -362,6 +410,7 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     std::string timestamp = std::to_string(millis);
     std::string out_file = work_dir + "/source_out_" + std::to_string(id) + "_" + timestamp + source_config.output_suffix;
     std::string in_file = "";
+    std::string new_env_file = "";
     std::vector<const char*> source_argv;
     std::vector<const char*> source_envp;
     TestCase testcase;
@@ -373,6 +422,14 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     std::string pintool_mut_path = "";
     if (level == 1) pintool_mut_path = pintool_path + "/obj-intel64/mutate_ins_one.so";
     else if (level == 2) pintool_mut_path = pintool_path + "/obj-intel64/mutate_ins_multi.so";
+    else if (level == 3) {
+        if (branch_flip_type == 1)
+            pintool_mut_path = pintool_path + "/obj-intel64/branch_flip.so";
+        else if (branch_flip_type == 2)
+            pintool_mut_path = pintool_path + "/obj-intel64/branch_flip_multi.so";
+        else
+            abort();
+    }
     else abort();
 
     source_argv.push_back(pintool_mut_path.c_str());
@@ -403,7 +460,7 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
         std::string env_name = e.substr(0, e.find('='));
         if (std::filesystem::is_regular_file(env_value)){
             std::filesystem::path tmp_path = env_value;
-            std::string new_env_file = work_dir + "/" + tmp_path.filename().string();
+            new_env_file = work_dir + "/" + tmp_path.filename().string();
             std::string new_env = env_name + "=" + new_env_file;
             tmp_source_env.push_back(new_env);
             std::filesystem::copy(env_value, new_env_file, std::filesystem::copy_options::overwrite_existing);
@@ -443,11 +500,15 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
         struct rlimit limit;
         limit.rlim_cur = 1024 * 1024 * 8;
         limit.rlim_max = 1024 * 1024 * 8;
-        if (setrlimit(RLIMIT_FSIZE, &limit) != 0) perror("setrlimit() failed!\n");
+        if (setrlimit(RLIMIT_FSIZE, &limit) != 0) perror("setrlimit():RLIMIT_FSIZE failed!\n");
         // set vitual memory limit to 1GB
         limit.rlim_cur = 1024 * 1024 * 1024;
         limit.rlim_max = 1024 * 1024 * 1024;
-        if (setrlimit(RLIMIT_AS, &limit) != 0) perror("setrlimit() failed!\n");
+        if (setrlimit(RLIMIT_AS, &limit) != 0) perror("setrlimit():RLIMIT_AS failed!\n");
+        // disable core dump
+        limit.rlim_cur = 0;
+        limit.rlim_max = 0;
+        if (setrlimit(RLIMIT_CORE, &limit) != 0) perror("setrlimit():RLIMIT_CORE failed!\n");
 
         // restrict output dir?
         // assert(chdir(out_dirs[id].c_str()) == 0);
@@ -505,6 +566,8 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
             else
                 abort();
             
+        }else if (level == 3){
+
         }
         else{abort();}
         
@@ -519,6 +582,9 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     }
     if (in_file != ""){
         if (!std::filesystem::remove(in_file)) std::cerr << "fuzz_one: delete input file failed\n";
+    }
+    if (new_env_file != ""){
+        if (!std::filesystem::remove(new_env_file)) std::cerr << "fuzz_one: delete copied env file failed\n";
     }
 
     return testcase;
@@ -864,7 +930,48 @@ void Worker::mutations_multi(const Patchpoints &pps, int mut_type){
 
 }
 
-void Worker::fuzz_candidates_1(){
+void Worker::mutations_branch(const Patchpoints &pps){
+    if (stop_soon) return;
+    PintoolArgs pintool_args;
+    std::string addrs_str = "";
+    
+    if (pps.size() == 1){
+        if (stop_soon) return;
+        branch_flip_type = 1;
+        pintool_args["-addr"] = std::to_string(pps[0].addr);
+        pintool_args["-iter"] = std::to_string(addr2iter_branch.map[pps[0].addr]);
+        pintool_args["-n"] = "0";
+        TestCase ts = fuzz_one(pintool_args, pps[0]);
+        ts.mut_type = BRANCH_FLIP;
+        mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+        if (ts.filename[0] == '\0'){
+            if (stop_soon) return;
+            // combine with next 10 branch flip
+            for (size_t i = 1; i <= 10; i++)
+            {
+                pintool_args["-n"] = std::to_string(i);
+                ts = fuzz_one(pintool_args, pps[0]);
+                ts.mut_type = BRANCH_FLIP_NEXT;
+                mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+            }
+        }
+
+    }else{// combination
+        if (stop_soon) return;
+        branch_flip_type = 2;
+        for (size_t i = 0; i < pps.size(); i++){
+            addrs_str += (std::to_string(pps[i].addr) + ",");
+        }
+        addrs_str.pop_back();
+        pintool_args["-addr"] = addrs_str;
+        TestCase ts = fuzz_one(pintool_args, pps[0]);
+        ts.mut_type = BRANCH_FLIP_MULTI;
+        mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+    }
+
+}
+
+void Worker::fuzz_candidates_one(){
     if (stop_soon) return;
     // unfuzzed patchpoints
     for (size_t i = 0; i < selected_pps.unfuzzed_pps.size(); i++){
@@ -892,7 +999,7 @@ void Worker::fuzz_candidates_1(){
     
 }
 
-void Worker::fuzz_candidates_2(){
+void Worker::fuzz_candidates_multi(){
     if (stop_soon) return;
     // unfuzzed patchpoints
     Patchpoints new_pps;
@@ -918,6 +1025,35 @@ void Worker::fuzz_candidates_2(){
         mutations_multi(selected_pps_multi.interest_pps.pps, HAVOC_MULTI);
     }
     
+}
+
+void Worker::fuzz_candidates_branch(){
+    if (stop_soon) return;
+    // unfuzzed patchpoints
+    bool check_ptr = false, is_pointer = false;
+    for (size_t i = 0; i < selected_pps.unfuzzed_pps.size(); i++){
+        if (stop_soon) return;
+        {
+            std::lock_guard<std::mutex> lock(addr2iter_branch.mutex);
+            if (addr2iter_branch.map.count(selected_pps.unfuzzed_pps[i].addr) == 0) {
+                addr2iter_branch.map[selected_pps.unfuzzed_pps[i].addr] = get_iter(work_dir, std::to_string(selected_pps.unfuzzed_pps[i].addr), check_ptr, is_pointer);
+                //printf("pp: %p, iter: %ld\n", (void *)pp.addr, num_iter);
+            }
+        }
+        Patchpoints tmp_pps;
+        tmp_pps.push_back(selected_pps.unfuzzed_pps[i]);
+        mutations_branch(tmp_pps);
+    }
+
+    // random patchpoints combination
+    if (!selected_pps.random_pps.empty()){
+        if (stop_soon) return;
+        mutations_branch(selected_pps.random_pps);
+    }
+    // clear records
+    size_t *count_ptr = (size_t *)posix_shm.shm_base_ptr;
+    count_ptr[id + 1] = 0;
+    cur_mut_count = 0;
 }
 
 void Worker::save_interest_pps(){
@@ -1028,20 +1164,25 @@ void Worker::start(){
     }
 
     // evenly dispatch different mutation approaches
-    if (id % 2 == 0) level = 1;
-    else level = 2;
+    if (level != 3){
+        if (id % 2 == 0) level = 1;
+            else level = 2;
+    }
     //level = 1;
 
     // main loop of worker
     while(1){
         if (level == 1){
             generate_testcases();
-            fuzz_candidates_1();
+            fuzz_candidates_one();
             save_interest_pps();
         }else if (level == 2){
             generate_testcases_multi();
-            fuzz_candidates_2();
+            fuzz_candidates_multi();
             save_interest_pps();
+        }else if (level == 3){
+            generate_testcases_branch();
+            fuzz_candidates_branch();
         }
         if (stop_soon) break;
     }

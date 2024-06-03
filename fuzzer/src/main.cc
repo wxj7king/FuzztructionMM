@@ -33,9 +33,11 @@ static std::set<std::string> delete_white_list;
 static int schedule_mode = 2;
 static size_t max_random_steps = 32;
 static size_t max_num_one_mut = 1024;
-static size_t num_thread = 1;
+static size_t num_thread = 2;
+static size_t num_br_flip_workers = 1;
 static size_t generator_timeout = 3;
 static size_t max_pps_one_mut = 30;
+static size_t max_pps_one_mut_branch = 10;
 /// run forever if it is zero
 static size_t fuzzer_timeout = 0;
 static bool with_afl = false;
@@ -98,7 +100,7 @@ static void at_exit(){
 
 }
 
-static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points){
+static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points, bool br_flip){
     std::string source_out = out_dir + "/tmp_source" + Worker::source_config.output_suffix;
     std::string find_ins_out = out_dir + "/tmp_pintool";
     std::vector<const char*> source_argv;
@@ -107,7 +109,11 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
     // argv
     source_argv.push_back(Worker::pinbin_path.c_str());
     source_argv.push_back("-t");
-    std::string path_tmp = Worker::pintool_path + "/obj-intel64/find_inst_sites.so";
+    std::string path_tmp = "";
+    if (br_flip)
+        path_tmp = Worker::pintool_path + "/obj-intel64/find_cond_branch_sites.so";
+    else
+        path_tmp = Worker::pintool_path + "/obj-intel64/find_inst_sites.so";
     source_argv.push_back(path_tmp.c_str());
     source_argv.push_back("-o");
     source_argv.push_back(find_ins_out.c_str());
@@ -209,63 +215,88 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
         return false;
     }
 
-    for (size_t i = 0; i < lines.size(); i++)
-    {
-        Patchpoint pp;
-        std::string line = lines[i];
-        size_t del_idx = line.find('@');
-        std::string disas = line.substr(0, del_idx);
-        line = line.substr(del_idx + 1, line.length());
-
-        del_idx = line.find(',');
-        //printf("dd: %s, %d\n", line.c_str(), del_idx);
-        try
-        {
-            pp.addr = std::stoul(line.substr(0, del_idx), nullptr, 16); 
-            pp.reg_size = (uint8_t)std::stoul(line.substr(del_idx + 1, line.length()));
+    if (br_flip){
+        size_t tmp_iter = 0;
+        for (size_t i = 0; i < lines.size(); i++){
+            Patchpoint pp;
+            std::string line = lines[i];
+            size_t del_idx = line.find('@');
+            line = line.substr(del_idx + 1, line.length());
+            del_idx = line.find(',');
+            try
+            {   
+                tmp_iter = std::stoul(line.substr(del_idx + 1, line.length()));
+                pp.addr = std::stoul(line.substr(0, del_idx), nullptr, 16); 
+                
+            }
+            catch(const std::exception& e)
+            {
+                continue;
+            }
+            // skip instructions that are not executed
+            if (tmp_iter == 0)
+                continue;
+            patch_points.pps.push_back(pp);
         }
-        catch(const std::exception& e)
-        {
-            continue;
-        }
-        /// skip jmp ins
-        if (pp.reg_size == 32) continue;
-        /// filter possible invalid ins
-        if (pp.reg_size == 0) continue;
 
-        uint64_t found_mov_b4_jmp_addr = 0;
-        size_t max_search_depth = 500;
-        size_t cap = std::min(lines.size(), i + max_search_depth);
-        for (size_t j = i + 1; j < cap; j++)
-        {
-            if ((lines[j].find("jz") != std::string::npos) || (lines[j].find("jnz") != std::string::npos) ){
-                if (j - 1 != i) {
-                    std::string tmp_str = lines[j - 1];
-                    //std::cout << tmp_str << std::endl;
-                    /// a sequence of jmp, just skip
-                    assert(tmp_str.find("mov") != std::string::npos);
-                    tmp_str = tmp_str.substr(tmp_str.find('@') + 1, tmp_str.length());
-                    tmp_str = tmp_str.substr(0, tmp_str.find(','));
-                    try
-                    {
-                        found_mov_b4_jmp_addr = std::stoul(tmp_str, nullptr, 16); 
+    }else{
+        for (size_t i = 0; i < lines.size(); i++){
+            Patchpoint pp;
+            std::string line = lines[i];
+            size_t del_idx = line.find('@');
+            std::string disas = line.substr(0, del_idx);
+            line = line.substr(del_idx + 1, line.length());
+
+            del_idx = line.find(',');
+            //printf("dd: %s, %d\n", line.c_str(), del_idx);
+            try
+            {
+                pp.addr = std::stoul(line.substr(0, del_idx), nullptr, 16); 
+                pp.reg_size = (uint8_t)std::stoul(line.substr(del_idx + 1, line.length()));
+            }
+            catch(const std::exception& e)
+            {
+                continue;
+            }
+            /// skip jmp ins
+            if (pp.reg_size == 32) continue;
+            /// filter possible invalid ins
+            if (pp.reg_size == 0) continue;
+
+            uint64_t found_mov_b4_jmp_addr = 0;
+            size_t max_search_depth = 500;
+            size_t cap = std::min(lines.size(), i + max_search_depth);
+            for (size_t j = i + 1; j < cap; j++)
+            {
+                if ((lines[j].find("jz") != std::string::npos) || (lines[j].find("jnz") != std::string::npos) ){
+                    if (j - 1 != i) {
+                        std::string tmp_str = lines[j - 1];
+                        //std::cout << tmp_str << std::endl;
+                        /// a sequence of jmp, just skip
+                        assert(tmp_str.find("mov") != std::string::npos);
+                        tmp_str = tmp_str.substr(tmp_str.find('@') + 1, tmp_str.length());
+                        tmp_str = tmp_str.substr(0, tmp_str.find(','));
+                        try
+                        {
+                            found_mov_b4_jmp_addr = std::stoul(tmp_str, nullptr, 16); 
+                        }
+                        catch(const std::exception& e)
+                        {
+                            found_mov_b4_jmp_addr = 0;
+                        }
+                            
+                        break;
+                    }else{
+                        /// skip mov ins that has a direct effect on its following cond jmp
+                        break;
                     }
-                    catch(const std::exception& e)
-                    {
-                        found_mov_b4_jmp_addr = 0;
-                    }
-                        
-                    break;
-                }else{
-                    /// skip mov ins that has a direct effect on its following cond jmp
-                    break;
                 }
             }
+            // 0 or addr
+            pp.next_mov_b4_jmp = found_mov_b4_jmp_addr;
+            // printf("%s, %p, %u, %p\n", disas.c_str(), (void *)pp.addr, pp.reg_size, (void *)pp.next_mov_b4_jmp);
+            patch_points.pps.push_back(pp);
         }
-        // 0 or addr
-        pp.next_mov_b4_jmp = found_mov_b4_jmp_addr;
-        // printf("%s, %p, %u, %p\n", disas.c_str(), (void *)pp.addr, pp.reg_size, (void *)pp.next_mov_b4_jmp);
-        patch_points.pps.push_back(pp);
     }
     
 
@@ -279,22 +310,34 @@ static bool find_patchpoints(std::string out_dir, Patchpointslock& patch_points)
 void *thread_worker(void* arg){
     ThreadArg *targ = (ThreadArg *)arg;
     Worker worker(targ->tid);
+    if (targ->is_br_flip)
+        worker.set_level(3);
     worker.start();
     return nullptr;
 }
 
 static void child_process(){
     std::string out_dir = ftmm_dir;
-    if (!find_patchpoints(out_dir, Worker::source_pps)) {
+    if (!find_patchpoints(out_dir, Worker::source_pps, false)) {
         perror("find_patchpoints() failed!\n");
+        return;
+    }
+
+    if (!find_patchpoints(out_dir, Worker::source_pps_branch, true)) {
+        perror("find_patchpoints() failed for branch ins!\n");
         return;
     }
     //return;
     Worker::source_unfuzzed_pps.pps = Worker::source_pps.pps;
+    Worker::source_unfuzzed_pps_branch.pps = Worker::source_pps_branch.pps;
     Worker::start_time = std::chrono::high_resolution_clock::now();
 
     for (size_t i = 0; i < num_thread; i++){
         targs[i].tid = i;
+        if (i < num_thread - num_br_flip_workers)
+            targs[i].is_br_flip = false;
+        else
+            targs[i].is_br_flip = true;
         int rc = pthread_create(&threads[i], NULL, thread_worker, (void *)&targs[i]);
         if (rc) {
             perror("pthread_create()");
@@ -327,6 +370,7 @@ static bool init(){
     Worker::num_thread = num_thread;
     Worker::generator_timeout = generator_timeout;
     Worker::max_pps_one_mut = max_pps_one_mut;
+    Worker::max_pps_one_mut_branch = max_pps_one_mut_branch;
 
     // Worker::source_pids.assign(num_thread, -1);
     Worker::ftmm_dir = ftmm_dir;
@@ -478,7 +522,8 @@ static void usage(){
         "\nNote: \'-f\' option is mandatory!"
         "\n  -f path           config file of parameters of source and sink binary"
         "\n  -r num            maxmium steps for random mutation (default: 32)"
-        "\n  -n num_thread     number of threads (default: 1)"
+        "\n  -n num            number of threads for workers (default: 2)"
+        "\n  -b num            number of workers for branch flip (default: 1)"
         "\n  -T seconds        timeout for fuzzer (default: forever)"
         "\n  -t seconds        timeout for each run of mutated source binary (default: 3s)"
         "\n  -m num            maximum number of test cases one mutation can produce (default: 1024)"
@@ -497,6 +542,7 @@ static void print_params(){
         "\n  -f %s"
         "\n  -r %ld"
         "\n  -n %ld"
+        "\n  -b %ld"
         "\n  -T %ld"
         "\n  -t %ld"
         "\n  -m %ld"
@@ -504,7 +550,7 @@ static void print_params(){
         "\n  -a %d\n"
         ;
     
-    printf(params, config_path.c_str(), max_random_steps, num_thread, fuzzer_timeout, generator_timeout, max_num_one_mut, schedule_mode, with_afl);
+    printf(params, config_path.c_str(), max_random_steps, num_thread, num_br_flip_workers, fuzzer_timeout, generator_timeout, max_num_one_mut, schedule_mode, with_afl);
 }
 
 
@@ -513,7 +559,7 @@ int main(int argc, char **argv){
     int loaded = 0;
     opterr = 0;
 
-    while ((opt = getopt(argc, argv, "h:f:r:n:T:t:m:l:a")) > 0)
+    while ((opt = getopt(argc, argv, "h:f:r:n:b:T:t:m:l:a")) > 0)
     {
         switch (opt)
         {
@@ -538,6 +584,14 @@ int main(int argc, char **argv){
                 num_thread = atoll(optarg);
                 if (num_thread == 0){
                     fprintf(stderr, "Invalid value of the number of threads: %s\n", optarg);
+                    show_help = 1;
+                }
+                break;
+
+            case 'b':
+                num_br_flip_workers = atoll(optarg);
+                if (num_br_flip_workers == 0){
+                    fprintf(stderr, "Invalid value of the number of branch flip workers: %s\n", optarg);
                     show_help = 1;
                 }
                 break;
@@ -604,6 +658,9 @@ int main(int argc, char **argv){
     if (show_help == 1 || loaded == 0){
         usage();
     }
+
+    if (num_thread <= num_br_flip_workers)
+        usage();
 
     print_params();
     printf("\nGenerator config:\n");

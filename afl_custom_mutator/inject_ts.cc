@@ -59,7 +59,8 @@ typedef struct my_mutator {
 #define POSIX_SHM_NAME "FTMM_AFL_SHM"
 
 static const char *mut_types[] = {"byte_flip", "bit_flip", "rand_byte", "rand_byte0", "u8add", "havoc",
-                                  "byte_flip_multi", "bit_flip_multi", "rand_byte_multi", "rand_byte0_multi", "u8add_multi", "havoc_multi"
+                                  "byte_flip_multi", "bit_flip_multi", "rand_byte_multi", "rand_byte0_multi", "u8add_multi", "havoc_multi",
+                                  "branch_flip", "branch_flip_next", "branch_flip_multi"
                                   };
 extern "C" {
 
@@ -205,7 +206,7 @@ const char *afl_custom_describe(my_mutator_t *data, size_t max_description_len){
         strcat(ret, addr);
         strcat(ret, ",mut:");
         strcat(ret, mut_types[ts_ptr->mut_type]);
-        if (ts_ptr->mut_type >= 6){
+        if (ts_ptr->mut_type >= 6 && ts_ptr->mut_type < 12){
             strcat(ret, ",num_pps:");
             strcat(ret, std::to_string(ts_ptr->multi_num).c_str());
         }

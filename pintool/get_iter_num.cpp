@@ -74,7 +74,7 @@ VOID InstrumentIns(INS ins, ADDRINT baseAddr)
                         IARG_PARTIAL_CONTEXT, &regsetIn, &regsetOut,
                         IARG_END);
     }else{
-        INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR) Ins_counter, IARG_FAST_ANALYSIS_CALL , IARG_END);
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR) Ins_counter, IARG_FAST_ANALYSIS_CALL , IARG_END);
         //INS_InsertCall(ins, IPOINT_AFTER, (AFUNPTR) Ins_counter, IARG_END);
     }
     

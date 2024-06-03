@@ -37,6 +37,7 @@ typedef std::set<std::string> StringSet;
 typedef std::map<std::string, std::string> PintoolArgs;
 typedef struct thread_arg{
     int tid;
+    bool is_br_flip;
 }ThreadArg;
 typedef struct posix_shm_para{
     int shmfd;
