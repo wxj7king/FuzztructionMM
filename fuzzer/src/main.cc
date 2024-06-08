@@ -49,15 +49,16 @@ static std::string aflpp_path = "";
 static std::string afl_custom_mutator_path = "";
 
 void main_sig_handler(int sig){
+    // kill workers first that otherwise worker threads could be frozen by msgqueue send
+    kill(worker_pid, SIGINT);
+    waitpid(worker_pid, 0, 0);
+
     for (size_t i = 0; i < 2; i++){   
         if (afl_pid[i]){
             kill(afl_pid[i], SIGKILL);
             waitpid(afl_pid[i], 0, 0);
         }
     }
-
-    kill(worker_pid, SIGINT);
-    waitpid(worker_pid, 0, 0);
 
     exit(0);
 }
@@ -757,6 +758,11 @@ int main(int argc, char **argv){
             perror("fork()");
             return -1;
         }else if(afl_pid[i] == 0){
+            sigset_t block;
+            sigemptyset(&block);
+            sigaddset(&block, SIGINT);
+            sigprocmask(SIG_BLOCK, &block, NULL);
+            
             // discard outputs of slave afl++ instance
             if (i == 1){
                 int null_fd = open("/dev/null", O_WRONLY);

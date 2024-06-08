@@ -64,9 +64,10 @@ std::string Worker::sha256(const std::string &file_path){
         return "";
     }
 
-    char read_buf[4096];
+    //char read_buf[4096];
+    char *read_buf = (char *)calloc(1024 * 1024 * 8, 1);
     while(fp.good()){
-        fp.read(read_buf, 4096);
+        fp.read(read_buf, sizeof(read_buf));
         if(!EVP_DigestUpdate(ctx, read_buf, fp.gcount())){
             perror("EVP_DigestUpdate()");
             EVP_MD_CTX_free(ctx);
@@ -82,6 +83,7 @@ std::string Worker::sha256(const std::string &file_path){
     }
 
     EVP_MD_CTX_free(ctx);
+    free(read_buf);
     std::ostringstream oss;
     for (size_t i = 0; i < md_len; i++){
         oss << std::hex << std::setw(2) << std::setfill('0') << (int)hash[i];
@@ -457,7 +459,7 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     {                
         std::string env_value = e.substr(e.find('=') + 1);
         std::string env_name = e.substr(0, e.find('='));
-        if (std::filesystem::is_regular_file(env_value)){
+        if (std::filesystem::is_regular_file(env_value) && env_value.find(".so") == std::string::npos){
             std::filesystem::path tmp_path = env_value;
             new_env_file = work_dir + "/" + tmp_path.filename().string();
             std::string new_env = env_name + "=" + new_env_file;
@@ -528,18 +530,14 @@ TestCase Worker::fuzz_one(PintoolArgs& pintool_args, const Patchpoint &pp){
     }
     // source_pids[id] = -1;
 
-    bool fail = false;
-    std::ifstream mutated_output(out_file);
-    if (!mutated_output){
-        //std::cout << "mutated output file open failed\n";
-        fail = true;
-    }else if(std::filesystem::file_size(out_file) == 0){
-        //std::cout << "mutated output file is empty\n";
-        if(!std::filesystem::remove(out_file)) printf("failed to delete file '%s'\n", out_file.c_str());
-        fail = true;
-    }else{
-        //std::cout << "mutated output file exists!\n";
-        fail = false;
+    bool fail = true;
+    if (std::filesystem::exists(out_file)){
+        if (std::filesystem::is_regular_file(out_file)){
+            if (std::filesystem::file_size(out_file) != 0)
+                fail = false;
+        }
+        if (fail)
+            std::filesystem::remove_all(out_file);
     }
     
     if (!fail){
@@ -617,7 +615,8 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
         case BIT_FLIP:
 
             for (size_t j = 0; j < iters.size(); j++)
-            { 
+            {   
+                if (stop_soon) return;
                 pintool_args["-iter2mut"] = std::to_string(iters[j]);
                 for (size_t i = 0; i < reg_max_bytes2mut * 8; i++)
                 {   
@@ -643,7 +642,8 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
             break;
         case BYTE_FLIP:
             for (size_t j = 0; j < iters.size(); j++)
-            { 
+            {   
+                if (stop_soon) return;
                 pintool_args["-iter2mut"] = std::to_string(iters[j]);
                 for (size_t i = 0; i < reg_max_bytes2mut; i++)
                 {
@@ -727,7 +727,8 @@ void Worker::mutations_one(const Patchpoint &pp, int mut_type){
             break;
         case U8ADD:
             for (size_t j = 0; j < iters.size(); j++)
-            {
+            {   
+                if (stop_soon) return;
                 pintool_args["-iter2mut"] = std::to_string(iters[j]);
                 /// apply only the lowest byte
                 // for (size_t i = 0; i < std::min((uint8_t)2, reg_max_bytes2mut); i++)
@@ -945,7 +946,8 @@ void Worker::mutations_branch(const Patchpoint &pp, int mut_type){
             if (stop_soon) return;
             // combine with next 10 branch flip
             for (size_t i = 1; i <= 10; i++)
-            {
+            {   
+                if (stop_soon) return;
                 pintool_args["-n"] = std::to_string(i);
                 ts = fuzz_one(pintool_args, pp);
                 ts.mut_type = BRANCH_FLIP_NEXT;
@@ -969,6 +971,7 @@ void Worker::mutations_branch(const Patchpoint &pp, int mut_type){
         TestCase ts = fuzz_one(pintool_args, pp);
         ts.mut_type = BRANCH_FLIP_MULTI;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+        if (stop_soon) return;
 
         // only instrument with half probability
         pintool_args["-i"] = "1";
@@ -976,6 +979,7 @@ void Worker::mutations_branch(const Patchpoint &pp, int mut_type){
         ts = fuzz_one(pintool_args, pp);
         ts.mut_type = BRANCH_FLIP_MULTI;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+        if (stop_soon) return;
 
         // only flip branch with half probability
         pintool_args["-i"] = "0";
@@ -983,6 +987,7 @@ void Worker::mutations_branch(const Patchpoint &pp, int mut_type){
         ts = fuzz_one(pintool_args, pp);
         ts.mut_type = BRANCH_FLIP_MULTI;
         mq_send(mqd, (const char *)&ts, sizeof(TestCase), 1);
+        if (stop_soon) return;
 
         // always instrument found ins and flip branch
         pintool_args["-i"] = "0";
