@@ -15,7 +15,7 @@ using std::flush;
 using std::hex;
 
 /// assume that typical pointer uses 6 bytes
-#define IsPointer(x) ((((uintptr_t)(x)) & ~0xffffffffff) != 0)
+#define IsPointer(x) (((((uintptr_t)(x)) & ~0xffffffffff) != 0) && ((((uintptr_t)(x)) & ~0xffffffffffff) == 0))
 static std::vector<ADDRINT> insts;
 static std::set<std::string> lib_blacklist;
 static UINT64 icount = 0;

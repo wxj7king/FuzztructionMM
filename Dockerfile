@@ -1,3 +1,5 @@
+# This docker file is customized from https://github.com/fuzztruction/fuzztruction/blob/main/Dockerfile
+
 FROM ubuntu:22.04 as dev
 ENV DEBIAN_FRONTEND noninteractive
 ENV CCACHE_DIR=/ccache
@@ -17,7 +19,6 @@ RUN \
     linux-tools-generic \
     curl ninja-build xdot aspell-en neovim libgmp-dev tmux \
     man psmisc lsof rsync zip unzip qpdf ncdu fdupes parallel \
-    texlive texlive-latex-extra texlive-fonts-recommended dvipng cm-super \
     virtualenv python2 g++ zlib1g-dev libc++-dev mercurial nano libssl-dev \
     lld llvm llvm-dev clang gcc-11-plugin-dev
 

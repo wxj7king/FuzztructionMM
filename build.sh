@@ -1,9 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-text_red=$(tput setaf 1)    # Red
-text_green=$(tput setaf 2)  # Green
-text_bold=$(tput bold)      # Bold
-text_reset=$(tput sgr0)     # Reset your text
+# set -eu
+# set -o pipefail
+
+text_red=$(tput setaf 1)
+text_green=$(tput setaf 2)
+text_bold=$(tput bold)
+text_reset=$(tput sgr0)
 
 function print_info {
     echo "${text_bold}${text_green}${1}${text_reset}"
@@ -20,7 +23,8 @@ fi
 
 # Download AFL++
 print_info "[+] Downloading and building AFL++..."
-git clone https://github.com/AFLplusplus/AFLplusplus -b v4.08c && pushd AFLplusplus && make all && popd
+git clone https://github.com/AFLplusplus/AFLplusplus -b v4.08c
+pushd AFLplusplus && make all && sudo make install && popd
 
 # Build the fuzzer
 print_info "[+] Building the fuzzer..."

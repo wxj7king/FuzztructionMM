@@ -1,14 +1,14 @@
 {   
     "generator": {
         "env" : [
-            "LD_LIBRARY_PATH=/home/user/Fuzztrunction--/targets/openssl/vanilla/openssl/"
+            "LD_LIBRARY_PATH=/home/user/FuzztructionMM/experiments/targets/openssl/vanilla/openssl"
         ],
-        "bin_path" : "/home/user/Fuzztrunction--/targets/openssl/vanilla/openssl/apps/openssl",
+        "bin_path" : "/home/user/FuzztructionMM/experiments/targets/openssl/vanilla/openssl/apps/openssl",
         "args" : [
             "genrsa",
             "-aes128",
             "-passout",
-            "pass:xxxxx",
+            "pass:xxxx",
             "-out",
             "$$",
             "512"
@@ -22,23 +22,23 @@
 
     "consumer": {
         "env" : [
-            "LD_LIBRARY_PATH=/home/user/Fuzztrunction--/targets/openssl/afl/openssl/"
+            "LD_LIBRARY_PATH=/home/user/FuzztructionMM/experiments/targets/openssl/afl/openssl"
         ],
-        "bin_path" : "/home/user/Fuzztrunction--/targets/openssl/afl/openssl/apps/openssl",
+        "bin_path" : "/home/user/FuzztructionMM/experiments/targets/openssl/afl/openssl/apps/openssl",
         "args" : [
             "rsa",
             "-check",
             "-in",
-            "$$",
+            "@@",
             "-passin",
-            "pass:xxxxx"
+            "pass:xxxx"
         ],
         "input_type" : "File",
         "output_type" : "None"
     },
 
     "afl++": {
-        "dir_in" : "/home/user/Fuzztrunction--/targets/openssl/afl_in",
-        "dir_out" : "/home/user/Fuzztrunction--/targets/openssl/afl_out"
+        "dir_in" : "/home/user/FuzztructionMM/experiments/targets/openssl/afl_in",
+        "dir_out" : "/tmp/genrsa_rsa"
     }
 }
