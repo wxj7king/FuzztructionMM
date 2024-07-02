@@ -3,4 +3,4 @@
 set -eu
 set -o pipefail
 
-docker push karakul7/ft-env-prebuilt:fix_1.0
+docker pull karakul7/ft-env-prebuilt:fix_1.1

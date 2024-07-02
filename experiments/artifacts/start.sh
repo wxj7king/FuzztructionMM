@@ -14,7 +14,7 @@ function log_success {
 }
 
 container_name="ftmm-exp"
-image_name="karakul7/ft-env-prebuilt:fix_1.0"
+image_name="karakul7/ft-env-prebuilt:fix_1.1"
 container="$(docker ps --filter="name=$container_name" --latest --quiet)"
 if [[ -n "$container" ]]; then
     # Connec to already running container

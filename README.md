@@ -55,8 +55,8 @@ After entering the container, there are some relevant directories:
 | `/home/user/eval` | Scripts for evaluation.  |
 | `/home/user/eval_shared` | Experiments results and data. It is mounted from the host directory `./eval_shared`. |
 | `/home/user/ftmm_targets` | Seeds for generators. |
-|  `/home/user/fuzztruction` | Prototype of Fuzztruction. |
-|  `/home/user/FuzztructionMM` | Prototype of FuzztructionMM. |
+| `/home/user/fuzztruction` | Prototype of Fuzztruction. |
+| `/home/user/FuzztructionMM` | Prototype of FuzztructionMM. |
 
 ### Evaluation
 All the scripts for evaluation are under the `/home/user/eval` folder. 
@@ -66,7 +66,7 @@ Use the `eval_run.py` to perform fuzzing on all targets.
 cd /home/user/eval
 # Perform fuzzing 5 times over a timeout of 24 hours.
 # Spawn 32 workers for Fuzztruction/FuzztructionMM
-sudo ./eval_run.py 86400 32
+sudo ./eval_run.py 86400 32 5
 ```
 #### Plot figures
 ```bash
